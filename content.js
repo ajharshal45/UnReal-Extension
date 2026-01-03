@@ -398,58 +398,78 @@
   const isSocialMedia = /twitter\.com|x\.com|facebook\.com|instagram\.com|linkedin\.com|reddit\.com|tiktok\.com/i.test(location.hostname);
   
   // ═══════════════════════════════════════════════════════════════
-  // PLATFORM DETECTION & SELECTORS
+  // PLATFORM DETECTION & SELECTORS (Updated for 2024-2026 DOM)
   // ═══════════════════════════════════════════════════════════════
   const PLATFORM_CONFIG = {
     'twitter.com': {
-      selector: 'article[data-testid="tweet"]',
-      textSelector: '[data-testid="tweetText"]',
-      imageSelector: '[data-testid="tweetPhoto"] img, img[src*="pbs.twimg.com/media"]',
+      selector: 'article[data-testid="tweet"], article[role="article"], div[data-testid="cellInnerDiv"] article, [data-testid="primaryColumn"] article',
+      textSelector: '[data-testid="tweetText"], [lang] span, div[dir="auto"]',
+      imageSelector: '[data-testid="tweetPhoto"] img, img[src*="pbs.twimg.com/media"], img[src*="twimg.com"]',
       name: 'Twitter'
     },
     'x.com': {
-      selector: 'article[data-testid="tweet"]',
-      textSelector: '[data-testid="tweetText"]',
-      imageSelector: '[data-testid="tweetPhoto"] img, img[src*="pbs.twimg.com/media"]',
+      selector: 'article[data-testid="tweet"], article[role="article"], div[data-testid="cellInnerDiv"] article, [data-testid="primaryColumn"] article',
+      textSelector: '[data-testid="tweetText"], [lang] span, div[dir="auto"]',
+      imageSelector: '[data-testid="tweetPhoto"] img, img[src*="pbs.twimg.com/media"], img[src*="twimg.com"]',
       name: 'X'
     },
     'facebook.com': {
-      selector: 'div[data-pagelet*="FeedUnit"], [role="article"], div[data-ad-comet-preview="message"]',
-      textSelector: '[data-ad-comet-preview="message"], [data-ad-preview="message"], .userContent',
+      selector: 'div[data-pagelet*="FeedUnit"], [role="article"], div[class*="x1yztbdb"], div[class*="x1lliihq"]',
+      textSelector: '[data-ad-comet-preview="message"], [data-ad-preview="message"], div[dir="auto"], span[dir="auto"]',
       imageSelector: 'img[src*="scontent"], img[src*="fbcdn"]',
       name: 'Facebook'
     },
     'instagram.com': {
-      selector: 'article',
-      textSelector: 'span[class*="Caption"], span[dir="auto"]',
-      imageSelector: 'img[src*="cdninstagram"], img[srcset]',
+      selector: 'article, div[role="presentation"], div[class*="_aagw"]',
+      textSelector: 'span[class*="_aacl"], span[dir="auto"], h1',
+      imageSelector: 'img[src*="cdninstagram"], img[srcset], img[class*="x5yr21d"]',
       name: 'Instagram'
     },
     'linkedin.com': {
-      selector: 'div.feed-shared-update-v2, div[data-urn*="activity"]',
-      textSelector: '.feed-shared-text, .break-words',
+      selector: 'div.feed-shared-update-v2, div[data-urn*="activity"], div[data-id]',
+      textSelector: '.feed-shared-text, .break-words, span[dir="ltr"]',
       imageSelector: '.feed-shared-image img, img[src*="media.licdn"]',
       name: 'LinkedIn'
     },
     'reddit.com': {
-      selector: 'div[data-testid="post-container"], shreddit-post, article',
-      textSelector: '[data-testid="post-content"], .md, [slot="text-body"]',
+      selector: 'div[data-testid="post-container"], shreddit-post, article, div[data-post-id]',
+      textSelector: '[data-testid="post-content"], .md, [slot="text-body"], h3',
       imageSelector: 'img[src*="redd.it"], img[src*="reddit"], [data-testid="post-media-container"] img',
       name: 'Reddit'
     },
     'tiktok.com': {
-      selector: 'div[data-e2e="recommend-list-item-container"], div[class*="DivItemContainer"]',
-      textSelector: '[data-e2e="video-desc"], [class*="SpanText"]',
-      imageSelector: 'img[src*="tiktokcdn"]',
+      selector: 'div[data-e2e="recommend-list-item-container"], div[class*="DivItemContainer"], div[class*="video-feed-item"]',
+      textSelector: '[data-e2e="video-desc"], [class*="SpanText"], span[class*="tiktok"]',
+      imageSelector: 'img[src*="tiktokcdn"], img[src*="tiktok"]',
       name: 'TikTok'
     }
+  };
+  
+  // Fallback generic selectors for any social-like feed
+  const FALLBACK_SELECTORS = {
+    selector: 'article, [role="article"], div[data-testid*="post"], div[data-testid*="tweet"]',
+    textSelector: 'p, span[dir="auto"], div[dir="auto"]',
+    imageSelector: 'img[src*="media"], img[src*="cdn"]',
+    name: 'Generic Feed'
   };
 
   // Get current platform config
   function getPlatformConfig() {
     for (const [domain, config] of Object.entries(PLATFORM_CONFIG)) {
       if (location.hostname.includes(domain.replace('.com', ''))) {
-        return config;
+        // Test if selector actually finds posts
+        const posts = document.querySelectorAll(config.selector);
+        if (posts.length > 0) {
+          console.log(`ShareSafe: Found ${posts.length} posts with ${config.name} selector`);
+          return config;
+        }
+        // Try fallback if platform selector doesn't find posts
+        const fallbackPosts = document.querySelectorAll(FALLBACK_SELECTORS.selector);
+        if (fallbackPosts.length > 0) {
+          console.log(`ShareSafe: Using fallback selector, found ${fallbackPosts.length} posts`);
+          return { ...FALLBACK_SELECTORS, name: config.name + ' (fallback)' };
+        }
+        return config; // Return original config anyway
       }
     }
     return null;
@@ -518,25 +538,6 @@
       .sharesafe-safe-post {
         border-left: 3px solid #22c55e !important;
         transition: border-color 0.3s ease;
-      }
-      
-      .sharesafe-safe-post::after {
-        content: '✓';
-        position: absolute;
-        top: 8px;
-        right: 8px;
-        width: 22px;
-        height: 22px;
-        background: #22c55e;
-        color: white;
-        border-radius: 50%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 12px;
-        font-weight: bold;
-        z-index: 100;
-        opacity: 0.8;
       }
       
       .sharesafe-risky-post {
@@ -629,22 +630,49 @@
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // ANALYZE POST CONTENT (Enhanced)
+  // ANALYZE POST CONTENT (Enhanced with logging)
   // ═══════════════════════════════════════════════════════════════
   function analyzePostContent(post) {
     const { text, images, videos } = extractPostContent(post);
     const lowerText = text.toLowerCase();
+    
+    console.log('ShareSafe: Analyzing post text:', text.slice(0, 150) + '...');
     
     const issues = [];
     let riskScore = 0;
 
     // ─── AI-Generated Content Detection ───
     const aiPatterns = [
-      { pattern: /\b(ai.?generated|made.?with.?ai|created.?by.?ai)\b/i, score: 40, msg: 'AI-generated content indicated' },
-      { pattern: /\b(dall-?e|midjourney|stable.?diffusion|leonardo\.?ai)\b/i, score: 45, msg: 'AI art tool mentioned' },
-      { pattern: /\b(chatgpt|gpt-?4|claude|gemini|bard).?(wrote|created|made)/i, score: 35, msg: 'AI writing tool used' },
-      { pattern: /\b(deepfake|face.?swap|synthetic.?media)\b/i, score: 55, msg: 'Deepfake/synthetic media warning' },
-      { pattern: /#(aiart|aigenerated|aiimage|midjourney|stablediffusion)/i, score: 38, msg: 'AI content hashtag' }
+      // Direct AI mentions
+      { pattern: /\b(ai.?generated|made.?with.?ai|created.?by.?ai|generated.?by.?ai)\b/i, score: 50, msg: '🤖 AI-generated content indicated' },
+      { pattern: /\bmeta.?ai\b/i, score: 55, msg: '🤖 Meta AI generated content' },
+      { pattern: /\b(dall-?e|midjourney|stable.?diffusion|leonardo\.?ai|firefly|imagen)\b/i, score: 50, msg: '🤖 AI image tool mentioned' },
+      { pattern: /\b(chatgpt|gpt-?4|claude|gemini|bard|copilot)\b/i, score: 40, msg: '🤖 AI tool mentioned' },
+      { pattern: /\b(deepfake|face.?swap|synthetic.?media|ai.?avatar)\b/i, score: 60, msg: '⚠️ Deepfake/synthetic media' },
+      
+      // Prompt indicators (strong signal for AI images)
+      { pattern: /\bprompt\s*[:\-⬇️↓📝🔽]/i, score: 55, msg: '🤖 AI prompt detected - generated image' },
+      { pattern: /\b(my.?prompt|the.?prompt|used.?prompt|with.?prompt)\b/i, score: 50, msg: '🤖 AI prompt mentioned' },
+      { pattern: /\b(prompted|prompting)\b/i, score: 35, msg: '🤖 May be AI-generated' },
+      
+      // AI art hashtags
+      { pattern: /#(aiart|aigenerated|aiimage|midjourney|stablediffusion|metaai|aigirl|aiportrait|aimodel)/i, score: 50, msg: '🤖 AI art hashtag' },
+      
+      // AI generation phrases
+      { pattern: /\b(generated.?(image|photo|picture|art|portrait))\b/i, score: 45, msg: '🤖 Generated image mentioned' },
+      { pattern: /\b(ai.?(image|photo|picture|art|portrait|model))\b/i, score: 48, msg: '🤖 AI image content' },
+      { pattern: /\b(text.?to.?image|image.?generation|ai.?create)\b/i, score: 45, msg: '🤖 AI image generation' },
+      
+      // Meta/Facebook AI specific
+      { pattern: /\b(imagine.?with.?meta|meta.?imagine|emu)\b/i, score: 50, msg: '🤖 Meta AI image generator' },
+      
+      // AI photography/portrait terms
+      { pattern: /\b(ai.?headshot|ai.?selfie|virtual.?model|digital.?human)\b/i, score: 52, msg: '🤖 AI-generated person' },
+      { pattern: /\b(not.?a.?real.?person|fictional.?person|ai.?person)\b/i, score: 55, msg: '🤖 Fake/AI person' },
+      
+      // Creative AI tools
+      { pattern: /\b(runway|pika|sora|heygen|synthesia|d-?id)\b/i, score: 48, msg: '🤖 AI video/content tool' },
+      { pattern: /\b(canva.?ai|adobe.?firefly|bing.?image|copilot.?image)\b/i, score: 45, msg: '🤖 AI creative tool' }
     ];
     
     aiPatterns.forEach(({ pattern, score, msg }) => {
@@ -741,13 +769,62 @@
       }
     });
 
+    // ─── Sports/News Verification Patterns ───
+    const newsVerifyPatterns = [
+      { pattern: /\b(dropped|axed|sacked|fired|banned|suspended)\b/i, score: 8, msg: 'Career change claim - verify source' },
+      { pattern: /\b(injured|ruled out|hospitalized|died|dead|passed away)\b/i, score: 12, msg: 'Health/status claim - verify from official sources' },
+      { pattern: /\b(confirmed|official|announced|breaking)\b/i, score: 5, msg: 'Claims official status' },
+      { pattern: /\b(transfer|signed|deal|contract|joining)\b/i, score: 6, msg: 'Transfer news - verify official announcement' },
+      { pattern: /\b(arrested|charged|scandal|controversy|accused)\b/i, score: 15, msg: 'Serious allegation - needs verification' },
+      { pattern: /\b(world cup|olympic|champion|winner|trophy)\b/i, score: 3, msg: 'Major event claim' }
+    ];
+    
+    newsVerifyPatterns.forEach(({ pattern, score, msg }) => {
+      if (pattern.test(lowerText)) {
+        issues.push(msg);
+        riskScore += score;
+      }
+    });
+
+    // ─── Image-Heavy Post Analysis ───
+    if (images.length > 0) {
+      // Posts with images should be verified
+      issues.push('Contains image - verify authenticity');
+      riskScore += 10;
+      
+      // Check for graphics/edited look in image URLs
+      if (images.some(src => /graphic|design|poster|edit|banner|thumb/i.test(src))) {
+        issues.push('May contain graphic/edited image');
+        riskScore += 8;
+      }
+    }
+
+    // ─── Screenshot Detection ───
+    if (images.length > 0 && /screenshot|screen.?shot|screen.?grab/i.test(lowerText)) {
+      issues.push('Contains screenshot - source unverifiable');
+      riskScore += 15;
+    }
+
+    // ─── Quote/Claim Attribution ───
+    if (/[""].{10,}[""]|said|says|according to|claims|stated/i.test(lowerText)) {
+      issues.push('Contains quote - verify attribution');
+      riskScore += 5;
+    }
+
+    // ─── Multiple Subjects/List Format (common in misinfo) ───
+    const bulletPoints = (text.match(/[•\-\*]|\d+\./g) || []).length;
+    if (bulletPoints >= 3) {
+      issues.push('List format - verify each claim');
+      riskScore += 8;
+    }
+
     // Remove duplicate issues
     const uniqueIssues = [...new Set(issues)];
 
-    // Determine risk level
+    // Determine risk level (adjusted thresholds)
     let riskLevel = 'low';
-    if (riskScore >= 50) riskLevel = 'high';
-    else if (riskScore >= 25) riskLevel = 'medium';
+    if (riskScore >= 40) riskLevel = 'high';
+    else if (riskScore >= 15) riskLevel = 'medium';
 
     return {
       riskLevel,
@@ -780,19 +857,27 @@
     if (post.querySelector('.sharesafe-post-warning')) return;
 
     const { riskLevel, score, issues } = analysis;
+    
+    // Check if this is AI-related
+    const isAIContent = issues.some(i => i.includes('🤖') || i.toLowerCase().includes('ai'));
+    
     const color = COLORS[riskLevel];
-    const bgColor = riskLevel === 'high' ? 'rgba(239,68,68,0.08)' : 'rgba(249,115,22,0.08)';
+    const aiColor = '#8b5cf6'; // Purple for AI
+    const displayColor = isAIContent ? aiColor : color;
+    const bgColor = isAIContent ? 'rgba(139,92,246,0.1)' : 
+                    (riskLevel === 'high' ? 'rgba(239,68,68,0.08)' : 'rgba(249,115,22,0.08)');
 
     // Add risk class to post
     post.classList.add(riskLevel === 'high' ? 'sharesafe-risky-post' : 'sharesafe-medium-post');
+    if (isAIContent) post.classList.add('sharesafe-ai-post');
 
     // Create warning banner
     const warning = document.createElement('div');
     warning.className = 'sharesafe-post-warning';
     warning.style.cssText = `
       background: ${bgColor};
-      border: 1px solid ${color}30;
-      border-left: 4px solid ${color};
+      border: 1px solid ${displayColor}30;
+      border-left: 4px solid ${displayColor};
       padding: 12px 16px;
       margin: 8px 0;
       border-radius: 8px;
@@ -803,20 +888,27 @@
       gap: 12px;
       position: relative;
       z-index: 100;
-      box-shadow: 0 2px 8px ${color}15;
+      box-shadow: 0 4px 12px ${displayColor}20;
     `;
 
-    const icon = riskLevel === 'high' ? '🚨' : '⚠️';
-    const title = riskLevel === 'high' ? 'High Risk Content Detected' : 'Verify Before Sharing';
+    // Different messaging for AI content
+    let icon, title;
+    if (isAIContent) {
+      icon = '🤖';
+      title = 'AI-Generated Content Detected';
+    } else {
+      icon = riskLevel === 'high' ? '🚨' : '⚠️';
+      title = riskLevel === 'high' ? 'High Risk Content' : 'Verify Before Sharing';
+    }
     
     warning.innerHTML = `
-      <span style="font-size: 20px; line-height: 1;">${icon}</span>
+      <span style="font-size: 24px; line-height: 1;">${icon}</span>
       <div style="flex: 1; min-width: 0;">
         <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap;">
-          <span style="font-weight: 700; color: ${color};">ShareSafe: ${title}</span>
+          <span style="font-weight: 700; color: ${displayColor}; font-size: 14px;">ShareSafe: ${title}</span>
           <span style="
-            background: ${color}20;
-            color: ${color};
+            background: ${displayColor}20;
+            color: ${displayColor};
             padding: 2px 8px;
             border-radius: 10px;
             font-size: 11px;
@@ -848,10 +940,10 @@
     // Dismiss button with hover effect
     const dismissBtn = warning.querySelector('.sharesafe-dismiss');
     dismissBtn.addEventListener('mouseenter', () => {
-      dismissBtn.style.background = `${color}30`;
+      dismissBtn.style.background = `${displayColor}30`;
     });
     dismissBtn.addEventListener('mouseleave', () => {
-      dismissBtn.style.background = `${color}15`;
+      dismissBtn.style.background = `${displayColor}15`;
     });
     dismissBtn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -864,12 +956,145 @@
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // MARK SAFE POST (Subtle visual feedback)
+  // ADD AI BADGE (Simple icon badge for AI-detected content)
+  // ═══════════════════════════════════════════════════════════════
+  function addAIBadge(post, analysis) {
+    if (post.querySelector('.sharesafe-ai-badge')) return;
+    
+    post.style.position = 'relative';
+    
+    const badge = document.createElement('div');
+    badge.className = 'sharesafe-ai-badge';
+    badge.style.cssText = `
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      background: linear-gradient(135deg, #8b5cf6, #7c3aed);
+      color: white;
+      padding: 6px 12px;
+      border-radius: 16px;
+      font-size: 12px;
+      font-weight: 600;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      z-index: 1000;
+      box-shadow: 0 2px 12px rgba(139, 92, 246, 0.4);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    `;
+    badge.innerHTML = `<span style="font-size: 14px;">🤖</span> AI`;
+    badge.title = analysis.issues.filter(i => i.includes('🤖')).join('\n') || 'AI-generated content detected';
+    
+    // Hover effect
+    badge.addEventListener('mouseenter', () => {
+      badge.style.transform = 'scale(1.05)';
+      badge.style.boxShadow = '0 4px 16px rgba(139, 92, 246, 0.5)';
+    });
+    badge.addEventListener('mouseleave', () => {
+      badge.style.transform = 'scale(1)';
+      badge.style.boxShadow = '0 2px 12px rgba(139, 92, 246, 0.4)';
+    });
+    
+    // Click to show details
+    badge.addEventListener('click', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      showAITooltip(badge, analysis);
+    });
+    
+    post.appendChild(badge);
+  }
+  
+  function showAITooltip(badge, analysis) {
+    // Remove existing tooltips
+    document.querySelectorAll('.sharesafe-ai-tooltip').forEach(t => t.remove());
+    
+    const aiIssues = analysis.issues.filter(i => i.includes('🤖'));
+    
+    const tooltip = document.createElement('div');
+    tooltip.className = 'sharesafe-ai-tooltip';
+    tooltip.style.cssText = `
+      position: absolute;
+      top: 100%;
+      right: 0;
+      margin-top: 8px;
+      background: white;
+      border-radius: 12px;
+      padding: 14px;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.15);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 13px;
+      width: 240px;
+      z-index: 1001;
+      color: #1f2937;
+      border: 1px solid #e5e7eb;
+    `;
+    tooltip.innerHTML = `
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+        <span style="font-size: 20px;">🤖</span>
+        <span style="font-weight: 700; color: #8b5cf6;">AI Content Detected</span>
+      </div>
+      <div style="color: #6b7280; line-height: 1.6; font-size: 12px;">
+        ${aiIssues.length > 0 ? aiIssues.map(i => `<div style="margin-bottom: 4px;">• ${i.replace('🤖 ', '')}</div>`).join('') : '<div>This content appears to be AI-generated</div>'}
+      </div>
+      <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #e5e7eb; font-size: 11px; color: #9ca3af;">
+        Score: ${analysis.score}/100
+      </div>
+    `;
+    
+    badge.style.position = 'relative';
+    badge.appendChild(tooltip);
+    
+    // Close on click outside
+    setTimeout(() => {
+      document.addEventListener('click', function closeTooltip() {
+        tooltip.remove();
+        document.removeEventListener('click', closeTooltip);
+      }, { once: true });
+    }, 100);
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // MARK SAFE POST (Visible scanned indicator)
   // ═══════════════════════════════════════════════════════════════
   function markSafePost(post) {
-    // Only add subtle indicator, don't clutter the feed
+    // Add subtle indicator with visible "scanned" badge
     post.classList.add('sharesafe-safe-post');
     post.style.position = 'relative';
+    
+    // Add a small "Scanned" badge
+    if (!post.querySelector('.sharesafe-scanned-badge')) {
+      const badge = document.createElement('div');
+      badge.className = 'sharesafe-scanned-badge';
+      badge.style.cssText = `
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        background: linear-gradient(135deg, #22c55e, #16a34a);
+        color: white;
+        padding: 4px 10px;
+        border-radius: 12px;
+        font-size: 11px;
+        font-weight: 600;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        z-index: 1000;
+        box-shadow: 0 2px 8px rgba(34, 197, 94, 0.3);
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        pointer-events: none;
+      `;
+      badge.innerHTML = `<span style="font-size: 12px;">✓</span> Scanned`;
+      post.appendChild(badge);
+      
+      // Fade out after 3 seconds
+      setTimeout(() => {
+        badge.style.transition = 'opacity 0.5s';
+        badge.style.opacity = '0.3';
+      }, 3000);
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -963,7 +1188,7 @@
     post.dataset.sharesafeQueued = 'true';
     analysisQueue.push(post);
     
-    // Start processing if not already
+      // Start processing if not already
     if (!isProcessingQueue) {
       processAnalysisQueue();
     }
@@ -994,6 +1219,29 @@
     isProcessingQueue = false;
   }
 
+  // Send post to background for Gemini analysis
+  async function analyzePostWithGemini(postContent) {
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage({
+        type: 'ANALYZE_POST',
+        content: {
+          title: '',
+          headline: '',
+          bodyText: postContent.text,
+          imageUrl: postContent.images[0] || '',
+          hasVideo: postContent.videos.length > 0,
+          url: location.href
+        }
+      }, (response) => {
+        if (chrome.runtime.lastError || !response) {
+          resolve(null); // Fall back to local analysis
+        } else {
+          resolve(response);
+        }
+      });
+    });
+  }
+
   async function analyzeAndMarkPost(post) {
     // Skip if already scanned
     if (post.dataset.sharesafeScanned === 'true') return;
@@ -1001,11 +1249,34 @@
     // Add scanning spinner
     addScanningSpinner(post);
     
-    // Small delay for visual feedback
-    await new Promise(resolve => setTimeout(resolve, 100));
+    // Extract post content
+    const { text, images, videos } = extractPostContent(post);
     
-    // Analyze the post
-    const analysis = analyzePostContent(post);
+    // First do quick local analysis
+    let analysis = analyzePostContent(post);
+    
+    // If post has images or medium+ risk, try Gemini for deeper analysis
+    const shouldUseGemini = images.length > 0 || analysis.score >= 15;
+    
+    if (shouldUseGemini) {
+      try {
+        const geminiResult = await analyzePostWithGemini({ text, images, videos });
+        if (geminiResult && geminiResult.riskLevel) {
+          // Merge Gemini results with local analysis
+          analysis = {
+            ...analysis,
+            riskLevel: geminiResult.riskLevel,
+            score: Math.max(analysis.score, geminiResult.score),
+            issues: [...new Set([...analysis.issues, ...(geminiResult.reasons || [])])],
+            hasRisk: analysis.hasRisk || geminiResult.score > 10,
+            geminiAnalyzed: true
+          };
+          console.log('ShareSafe: Gemini analysis result:', geminiResult);
+        }
+      } catch (e) {
+        console.log('ShareSafe: Gemini analysis failed, using local only');
+      }
+    }
     
     // Remove spinner
     removeScanningSpinner(post);
@@ -1018,26 +1289,135 @@
     
     totalScannedCount++;
     
-    // Handle based on risk level
-    if (analysis.hasRisk && (analysis.riskLevel === 'high' || analysis.riskLevel === 'medium')) {
+    // Check if this is AI-related content
+    const isAIContent = analysis.issues.some(i => i.includes('🤖') || i.toLowerCase().includes('ai-gen') || i.toLowerCase().includes('ai image'));
+    
+    // Handle based on content type
+    if (isAIContent) {
+      // AI content - show simple AI badge
+      addAIBadge(post, analysis);
+      riskyPostCount++;
+      updateBadgeCounter();
+    } else if (analysis.riskLevel === 'high') {
+      // High risk non-AI content - show warning banner
       addPostWarning(post, analysis);
-      
-      if (analysis.riskLevel === 'high' || analysis.riskLevel === 'medium') {
-        riskyPostCount++;
-        updateBadgeCounter();
-        
-        // Show toast only for high risk
-        if (analysis.riskLevel === 'high') {
-          showRiskyPostToast(analysis);
-        }
-      }
+      riskyPostCount++;
+      updateBadgeCounter();
+      showRiskyPostToast(analysis);
+    } else if (analysis.riskLevel === 'medium') {
+      // Medium risk - show verification indicator
+      addVerificationIndicator(post, analysis);
+    } else if (analysis.hasRisk && analysis.issues.length > 0) {
+      // Low risk but has some flags - add subtle verification indicator
+      addVerificationIndicator(post, analysis);
     } else {
-      // Mark as safe (subtle indicator)
+      // Completely safe - mark as scanned
       markSafePost(post);
     }
     
-    // Log for debugging
-    console.log(`ShareSafe: Scanned post #${totalScannedCount} - ${analysis.riskLevel} risk (score: ${analysis.score})`);
+    // Log for debugging with more detail
+    console.log(`%cShareSafe: 📝 Scanned post #${totalScannedCount}`, 'color: #22c55e; font-weight: bold;');
+    console.log(`  Risk: ${analysis.riskLevel.toUpperCase()} (score: ${analysis.score})${isAIContent ? ' [AI DETECTED]' : ''}`);
+    console.log(`  Text preview: ${analysis.text.slice(0, 100)}...`);
+    if (analysis.issues.length > 0) {
+      console.log(`  Issues:`, analysis.issues);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // ADD VERIFICATION INDICATOR (for low risk posts with flags)
+  // ═══════════════════════════════════════════════════════════════
+  function addVerificationIndicator(post, analysis) {
+    if (post.querySelector('.sharesafe-verify-badge')) return;
+    
+    post.style.position = 'relative';
+    post.classList.add('sharesafe-verified-post');
+    
+    const badge = document.createElement('div');
+    badge.className = 'sharesafe-verify-badge';
+    badge.style.cssText = `
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      background: linear-gradient(135deg, #3b82f6, #2563eb);
+      color: white;
+      padding: 6px 12px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      z-index: 1000;
+      box-shadow: 0 2px 8px rgba(59, 130, 246, 0.4);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      transition: all 0.2s;
+    `;
+    badge.innerHTML = `<span style="font-size: 12px;">🔍</span> Verify`;
+    badge.title = analysis.issues.slice(0, 2).join('\\n');
+    
+    // Show details on hover
+    badge.addEventListener('mouseenter', () => {
+      badge.style.transform = 'scale(1.05)';
+      badge.style.boxShadow = '0 4px 12px rgba(59, 130, 246, 0.5)';
+    });
+    badge.addEventListener('mouseleave', () => {
+      badge.style.transform = 'scale(1)';
+      badge.style.boxShadow = '0 2px 8px rgba(59, 130, 246, 0.4)';
+    });
+    
+    // Show tooltip on click
+    badge.addEventListener('click', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      showVerifyTooltip(badge, analysis);
+    });
+    
+    post.appendChild(badge);
+  }
+  
+  function showVerifyTooltip(badge, analysis) {
+    // Remove existing tooltip
+    document.querySelectorAll('.sharesafe-verify-tooltip').forEach(t => t.remove());
+    
+    const tooltip = document.createElement('div');
+    tooltip.className = 'sharesafe-verify-tooltip';
+    tooltip.style.cssText = `
+      position: absolute;
+      top: 100%;
+      right: 0;
+      margin-top: 8px;
+      background: white;
+      border-radius: 8px;
+      padding: 12px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 12px;
+      width: 220px;
+      z-index: 1001;
+      color: #1f2937;
+    `;
+    tooltip.innerHTML = `
+      <div style="font-weight: 700; margin-bottom: 8px; color: #3b82f6;">Verification Suggested</div>
+      <div style="color: #6b7280; line-height: 1.5;">
+        ${analysis.issues.slice(0, 3).map(issue => `<div style="margin-bottom: 4px;">• ${issue}</div>`).join('')}
+      </div>
+      <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #e5e7eb; font-size: 11px; color: #9ca3af;">
+        Score: ${analysis.score}/100 • Click outside to close
+      </div>
+    `;
+    
+    badge.style.position = 'relative';
+    badge.appendChild(tooltip);
+    
+    // Close on click outside
+    setTimeout(() => {
+      document.addEventListener('click', function closeTooltip() {
+        tooltip.remove();
+        document.removeEventListener('click', closeTooltip);
+      }, { once: true });
+    }, 100);
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -1059,6 +1439,7 @@
           
           // Queue for analysis if not already scanned
           if (post.dataset.sharesafeScanned !== 'true') {
+            console.log('ShareSafe: Post entered viewport, queuing for analysis');
             queuePostForAnalysis(post);
           }
         }
@@ -1075,7 +1456,7 @@
       intersectionObserver.observe(post);
     });
     
-    console.log(`ShareSafe: Intersection observer watching ${posts.length} posts`);
+    console.log(`%cShareSafe: 👀 Intersection observer watching ${posts.length} posts`, 'color: #f97316; font-weight: bold;');
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -1119,7 +1500,7 @@
       });
       
       if (newPostsFound) {
-        console.log('ShareSafe: New posts detected in feed');
+        console.log('%cShareSafe: ➕ New posts detected in feed', 'color: #6366f1; font-weight: bold;');
       }
     });
     
@@ -1128,7 +1509,7 @@
       subtree: true
     });
     
-    console.log('ShareSafe: Mutation observer active');
+    console.log('%cShareSafe: 🔄 Mutation observer active - watching for new posts', 'color: #22c55e; font-weight: bold;');
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -1155,78 +1536,171 @@
   }
 
   // ═══════════════════════════════════════════════════════════════
+  // IMMEDIATE POST SCAN - Scan all visible posts right now
+  // ═══════════════════════════════════════════════════════════════
+  function scanAllVisiblePostsNow() {
+    const config = getPlatformConfig();
+    if (!config) {
+      console.log('ShareSafe: No platform config, cannot scan');
+      return 0;
+    }
+    
+    const posts = document.querySelectorAll(config.selector);
+    let queuedCount = 0;
+    
+    console.log(`ShareSafe: Found ${posts.length} total posts on page`);
+    
+    posts.forEach((post, index) => {
+      // Skip if already scanned
+      if (post.dataset.sharesafeScanned === 'true') {
+        return;
+      }
+      
+      // Check if post is visible in viewport (with generous margin)
+      const rect = post.getBoundingClientRect();
+      const isVisible = rect.top < window.innerHeight + 500 && rect.bottom > -500;
+      
+      if (isVisible) {
+        console.log(`ShareSafe: Queuing post #${index + 1} for analysis`);
+        queuePostForAnalysis(post);
+        queuedCount++;
+      }
+    });
+    
+    console.log(`%cShareSafe: Queued ${queuedCount} posts for analysis`, 'color: #22c55e; font-weight: bold;');
+    return queuedCount;
+  }
+
+  // ═══════════════════════════════════════════════════════════════
   // START FEED SCANNER
   // ═══════════════════════════════════════════════════════════════
   function startFeedScanner() {
-    if (!isSocialMedia) return;
-    
-    const config = getPlatformConfig();
-    if (!config) {
-      console.log('ShareSafe: Unknown social media platform, using generic scanning');
+    if (!isSocialMedia) {
+      console.log('ShareSafe: Not a social media site, feed scanner disabled');
+      console.log('ShareSafe: Current hostname:', location.hostname);
       return;
     }
-
-    console.log(`ShareSafe: Starting live feed scanner for ${config.name}`);
+    
+    console.log(`%cShareSafe: 🔍 Starting LIVE feed scanner`, 'color: #6366f1; font-weight: bold; font-size: 14px;');
+    console.log('ShareSafe: Current hostname:', location.hostname);
     
     // Inject scanner styles
     injectScannerStyles();
-
-    // Wait for feed to load
-    setTimeout(() => {
+    
+    // Function to initialize scanning
+    function initializeScanning() {
+      const config = getPlatformConfig();
+      if (!config) {
+        console.log('ShareSafe: Waiting for posts to load...');
+        return false;
+      }
+      
+      const posts = document.querySelectorAll(config.selector);
+      if (posts.length === 0) {
+        console.log('ShareSafe: No posts found yet, waiting...');
+        return false;
+      }
+      
+      console.log(`%cShareSafe: ✓ Found ${posts.length} posts for ${config.name}`, 'color: #22c55e; font-weight: bold;');
+      console.log(`ShareSafe: Using selector: ${config.selector}`);
+      
       // Setup observers
       setupIntersectionObserver();
       setupMutationObserver();
       
-      // Initial scan of visible posts
-      scanVisiblePostsFallback();
+      // IMMEDIATELY scan visible posts
+      scanAllVisiblePostsNow();
       
-      // Fallback scroll listener (for browsers without IntersectionObserver support)
+      // Fallback scroll listener
       let scrollTimeout;
       window.addEventListener('scroll', () => {
         clearTimeout(scrollTimeout);
-        scrollTimeout = setTimeout(scanVisiblePostsFallback, 250);
+        scrollTimeout = setTimeout(() => {
+          scanAllVisiblePostsNow();
+        }, 200);
       }, { passive: true });
       
       // Periodic re-check for any missed posts
       setInterval(() => {
-        const config = getPlatformConfig();
-        if (config) {
-          const posts = document.querySelectorAll(config.selector);
-          posts.forEach(post => {
-            if (post.dataset.sharesafeScanned !== 'true' && !intersectionObserver) {
-              const rect = post.getBoundingClientRect();
-              if (rect.top < window.innerHeight && rect.bottom > 0) {
-                queuePostForAnalysis(post);
+        const currentConfig = getPlatformConfig();
+        if (currentConfig) {
+          const currentPosts = document.querySelectorAll(currentConfig.selector);
+          let newPosts = 0;
+          currentPosts.forEach(post => {
+            if (post.dataset.sharesafeScanned !== 'true') {
+              if (intersectionObserver) {
+                intersectionObserver.observe(post);
               }
-            } else if (intersectionObserver && post.dataset.sharesafeScanned !== 'true') {
-              intersectionObserver.observe(post);
+              newPosts++;
             }
           });
+          if (newPosts > 0) {
+            console.log(`ShareSafe: Found ${newPosts} new unscanned posts`);
+          }
         }
-      }, 2000);
+      }, 3000);
       
-    }, 1500);
+      return true;
+    }
+    
+    // Try to initialize immediately
+    if (!initializeScanning()) {
+      // If no posts found, retry with increasing delays
+      let retryCount = 0;
+      const maxRetries = 10;
+      const retryInterval = setInterval(() => {
+        retryCount++;
+        console.log(`ShareSafe: Retry ${retryCount}/${maxRetries} - looking for posts...`);
+        
+        if (initializeScanning() || retryCount >= maxRetries) {
+          clearInterval(retryInterval);
+          if (retryCount >= maxRetries) {
+            console.log('ShareSafe: Max retries reached, posts may load later');
+          }
+        }
+      }, 1000);
+    }
     
     // Update badge label to show scanning status
     setTimeout(() => {
-      if (badgeContainer) {
+      const config = getPlatformConfig();
+      if (badgeContainer && config) {
         const label = badgeContainer.querySelector('#sharesafe-label');
         if (label && riskyPostCount === 0) {
-          label.textContent = '🔍 Scanning feed...';
+          label.textContent = `🔍 Scanning ${config.name} feed...`;
           label.style.color = '#6366f1';
           label.style.opacity = '1';
           label.style.transform = 'translateX(0)';
           
-          // Hide after a few seconds if no risks found
+          // Update with scan count after a few seconds
           setTimeout(() => {
-            if (riskyPostCount === 0 && label) {
+            if (label && totalScannedCount > 0) {
+              if (riskyPostCount === 0) {
+                label.textContent = `✓ ${totalScannedCount} posts scanned`;
+                label.style.color = '#22c55e';
+              }
+              // Hide after showing count
+              setTimeout(() => {
+                if (riskyPostCount === 0) {
+                  label.style.opacity = '0';
+                  label.style.transform = 'translateX(20px)';
+                }
+              }, 2000);
+            } else if (riskyPostCount === 0) {
               label.style.opacity = '0';
               label.style.transform = 'translateX(20px)';
             }
-          }, 3000);
+          }, 4000);
         }
       }
     }, 500);
+    
+    // Periodic stats logging
+    setInterval(() => {
+      if (totalScannedCount > 0) {
+        console.log(`%cShareSafe Stats: ${totalScannedCount} posts scanned, ${riskyPostCount} risky posts found`, 'color: #6366f1; font-style: italic;');
+      }
+    }, 10000);
   }
 
   // ─────────────────────────────────────────────────────────────

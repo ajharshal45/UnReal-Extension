@@ -7,11 +7,22 @@ import { analyzeWithGemini } from './gemini.js';
 // CONFIGURATION
 // ═══════════════════════════════════════════════════════════════
 
-let DEMO_MODE = true; // Set to false to use real Gemini API
+let DEMO_MODE = false; // Set to false to use real Gemini API (gemini-2.5-flash)
 const CACHE_DURATION_MS = 10 * 60 * 1000; // 10 minutes
 
 // Clear old cache on startup
 chrome.storage.local.remove(['analysisCache']);
+
+// Check if API key exists, if not enable demo mode
+chrome.storage.sync.get(['geminiApiKey'], (data) => {
+  if (!data.geminiApiKey) {
+    console.log('ShareSafe: No API key found, using demo mode');
+    DEMO_MODE = true;
+  } else {
+    console.log('ShareSafe: API key found, using Gemini 2.5 Flash');
+    DEMO_MODE = false;
+  }
+});
 
 // ═══════════════════════════════════════════════════════════════
 // CONTENT ANALYSIS ENGINE
@@ -267,6 +278,7 @@ async function handleAnalysis(content) {
   // Check cache first
   const cached = await getCachedResult(url);
   if (cached) {
+    console.log('ShareSafe: Using cached result for', url);
     return cached;
   }
 
@@ -274,22 +286,27 @@ async function handleAnalysis(content) {
 
   if (DEMO_MODE) {
     // Demo mode: Use local analysis
+    console.log('ShareSafe: Using DEMO MODE (local analysis)');
     await new Promise(r => setTimeout(r, 600)); // Simulate processing
     result = analyzeContent(url, content);
   } else {
     // Production mode: Try Gemini API
+    console.log('ShareSafe: Using Gemini 2.5 Flash API');
     try {
       const data = await chrome.storage.sync.get(['geminiApiKey']);
       const apiKey = data.geminiApiKey;
       
       if (apiKey) {
+        console.log('ShareSafe: API key found, calling Gemini...');
         result = await analyzeWithGemini(content, apiKey);
+        console.log('ShareSafe: Gemini response:', result);
       } else {
         // No API key, fall back to local analysis
+        console.log('ShareSafe: No API key, falling back to local analysis');
         result = analyzeContent(url, content);
       }
     } catch (error) {
-      console.error('ShareSafe: Analysis error', error);
+      console.error('ShareSafe: Gemini API error', error);
       result = analyzeContent(url, content);
     }
   }
@@ -306,7 +323,7 @@ async function handleAnalysis(content) {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   
-  // Main analysis request
+  // Main analysis request (page-level)
   if (message.type === 'ANALYZE') {
     handleAnalysis(message.content)
       .then(sendResponse)
@@ -319,6 +336,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           summary: 'Could not complete analysis. Please try again.'
         });
       });
+    return true; // Keep channel open for async response
+  }
+
+  // Analyze individual post (for social media feeds)
+  if (message.type === 'ANALYZE_POST') {
+    // Only use Gemini if we have API key and not in demo mode
+    if (DEMO_MODE) {
+      // In demo mode, return null to let content script use local analysis
+      sendResponse(null);
+      return false;
+    }
+    
+    // Use Gemini for post analysis
+    (async () => {
+      try {
+        const data = await chrome.storage.sync.get(['geminiApiKey']);
+        if (data.geminiApiKey) {
+          const result = await analyzeWithGemini(message.content, data.geminiApiKey);
+          sendResponse(result);
+        } else {
+          sendResponse(null);
+        }
+      } catch (error) {
+        console.error('ShareSafe: Post analysis error', error);
+        sendResponse(null);
+      }
+    })();
     return true; // Keep channel open for async response
   }
 

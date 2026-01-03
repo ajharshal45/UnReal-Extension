@@ -1,8 +1,9 @@
 // ShareSafe - Gemini API Helper
 // Analyzes content and images for misinformation using Google Gemini
 
-const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
-const TIMEOUT_MS = 10000;
+const GEMINI_MODEL = 'gemini-2.5-flash';
+const GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+const TIMEOUT_MS = 15000;
 
 /**
  * Analyze webpage content for misinformation signals using Gemini
@@ -19,8 +20,11 @@ export async function analyzeWithGemini(content, apiKey) {
   };
 
   if (!apiKey) {
+    console.log('ShareSafe: No API key provided');
     return defaultResponse;
   }
+
+  console.log('ShareSafe: Analyzing with Gemini 2.5 Flash...');
 
   const hasImage = !!content.imageUrl;
 
