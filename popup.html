@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=320">
+  <title>ShareSafe</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      width: 320px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+      font-size: 14px;
+      color: #1f2937;
+      background: #fff;
+    }
+
+    .header {
+      background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+      color: #fff;
+      padding: 16px;
+      text-align: center;
+    }
+
+    .header h1 {
+      font-size: 20px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+
+    .header .logo {
+      width: 28px;
+      height: 28px;
+    }
+
+    .url-bar {
+      background: rgba(255,255,255,0.15);
+      padding: 8px 12px;
+      border-radius: 6px;
+      margin-top: 10px;
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .content {
+      padding: 16px;
+    }
+
+    .status {
+      text-align: center;
+      padding: 20px;
+      color: #6b7280;
+    }
+
+    .spinner {
+      width: 32px;
+      height: 32px;
+      border: 3px solid #e5e7eb;
+      border-top-color: #4f46e5;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin: 0 auto 12px;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .risk-badge {
+      display: inline-block;
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-weight: 600;
+      font-size: 13px;
+      text-transform: uppercase;
+      margin-bottom: 12px;
+    }
+
+    .risk-low {
+      background: #dcfce7;
+      color: #16a34a;
+    }
+
+    .risk-medium {
+      background: #ffedd5;
+      color: #ea580c;
+    }
+
+    .risk-high {
+      background: #fee2e2;
+      color: #dc2626;
+    }
+
+    .score {
+      font-size: 28px;
+      font-weight: 700;
+      margin-bottom: 16px;
+    }
+
+    .score span {
+      font-size: 16px;
+      color: #6b7280;
+      font-weight: 400;
+    }
+
+    .section-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: #6b7280;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+
+    .reasons {
+      background: #f9fafb;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+
+    .reasons ul {
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    .reasons li {
+      margin-bottom: 6px;
+      color: #374151;
+    }
+
+    .reasons li:last-child {
+      margin-bottom: 0;
+    }
+
+    .no-issues {
+      color: #16a34a;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .summary {
+      background: #f3f4f6;
+      padding: 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      color: #4b5563;
+      line-height: 1.5;
+    }
+
+    .footer {
+      border-top: 1px solid #e5e7eb;
+      padding: 12px 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11px;
+      color: #9ca3af;
+    }
+
+    .footer a {
+      color: #6366f1;
+      text-decoration: none;
+    }
+
+    .footer a:hover {
+      text-decoration: underline;
+    }
+
+    .demo-toggle {
+      display: none;
+      margin-top: 12px;
+      padding: 8px;
+      background: #fef3c7;
+      border-radius: 6px;
+      font-size: 12px;
+      text-align: center;
+    }
+
+    .demo-toggle.visible {
+      display: block;
+    }
+
+    .demo-toggle label {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      cursor: pointer;
+    }
+
+    .demo-toggle input {
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div class="header" id="header-area">
+    <h1>
+      <svg class="logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        <path d="M9 12l2 2 4-4"/>
+      </svg>
+      ShareSafe
+    </h1>
+    <div class="url-bar" id="page-url">Loading...</div>
+  </div>
+
+  <div class="content">
+    <div class="status" id="loading-status">
+      <div class="spinner"></div>
+      <div>Analyzing page...</div>
+    </div>
+
+    <div id="results" style="display: none;">
+      <div style="text-align: center;">
+        <div class="risk-badge" id="risk-badge">Loading</div>
+        <div class="score">
+          <span id="score-value">--</span><span>/100</span>
+        </div>
+      </div>
+
+      <div class="section-title">Analysis Results</div>
+      <div class="reasons" id="reasons-container">
+        <ul id="reasons-list"></ul>
+      </div>
+
+      <div class="section-title">Summary</div>
+      <div class="summary" id="summary-text"></div>
+
+      <div class="demo-toggle" id="demo-toggle">
+        <label>
+          <input type="checkbox" id="demo-checkbox" checked>
+          Demo Mode (for presentations)
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <span>Powered by Google Gemini</span>
+    <a href="settings.html" target="_blank">Settings</a>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
