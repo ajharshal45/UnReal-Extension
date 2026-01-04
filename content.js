@@ -1316,7 +1316,7 @@
     }
     
     // Log for debugging with more detail
-    console.log(`%cShareSafe: 📝 Scanned post #${totalScannedCount}`, 'color: #22c55e; font-weight: bold;');
+    console.log(`%c[ShareSafe] Scanned post #${totalScannedCount}`, 'color: #22c55e; font-weight: bold;');
     console.log(`  Risk: ${analysis.riskLevel.toUpperCase()} (score: ${analysis.score})${isAIContent ? ' [AI DETECTED]' : ''}`);
     console.log(`  Text preview: ${analysis.text.slice(0, 100)}...`);
     if (analysis.issues.length > 0) {
@@ -1456,7 +1456,7 @@
       intersectionObserver.observe(post);
     });
     
-    console.log(`%cShareSafe: 👀 Intersection observer watching ${posts.length} posts`, 'color: #f97316; font-weight: bold;');
+    console.log(`%c[ShareSafe] Intersection observer watching ${posts.length} posts`, 'color: #f97316; font-weight: bold;');
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -1500,7 +1500,7 @@
       });
       
       if (newPostsFound) {
-        console.log('%cShareSafe: ➕ New posts detected in feed', 'color: #6366f1; font-weight: bold;');
+        console.log('%c[ShareSafe] New posts detected in feed', 'color: #6366f1; font-weight: bold;');
       }
     });
     
@@ -1509,7 +1509,7 @@
       subtree: true
     });
     
-    console.log('%cShareSafe: 🔄 Mutation observer active - watching for new posts', 'color: #22c55e; font-weight: bold;');
+    console.log('%c[ShareSafe] Mutation observer active - watching for new posts', 'color: #22c55e; font-weight: bold;');
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -1567,7 +1567,7 @@
       }
     });
     
-    console.log(`%cShareSafe: Queued ${queuedCount} posts for analysis`, 'color: #22c55e; font-weight: bold;');
+    console.log(`%c[ShareSafe] Queued ${queuedCount} posts for analysis`, 'color: #22c55e; font-weight: bold;');
     return queuedCount;
   }
 
@@ -1581,7 +1581,7 @@
       return;
     }
     
-    console.log(`%cShareSafe: 🔍 Starting LIVE feed scanner`, 'color: #6366f1; font-weight: bold; font-size: 14px;');
+    console.log(`%c[ShareSafe] Starting LIVE feed scanner`, 'color: #6366f1; font-weight: bold; font-size: 14px;');
     console.log('ShareSafe: Current hostname:', location.hostname);
     
     // Inject scanner styles
@@ -1601,7 +1601,7 @@
         return false;
       }
       
-      console.log(`%cShareSafe: ✓ Found ${posts.length} posts for ${config.name}`, 'color: #22c55e; font-weight: bold;');
+      console.log(`%c[ShareSafe] Found ${posts.length} posts for ${config.name}`, 'color: #22c55e; font-weight: bold;');
       console.log(`ShareSafe: Using selector: ${config.selector}`);
       
       // Setup observers

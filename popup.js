@@ -1,4 +1,4 @@
-// ShareSafe Popup Script
+// UnReal Popup Script
 
 document.addEventListener('DOMContentLoaded', async () => {
   const loadingStatus = document.getElementById('loading-status');
@@ -7,28 +7,76 @@ document.addEventListener('DOMContentLoaded', async () => {
   const riskBadge = document.getElementById('risk-badge');
   const scoreValue = document.getElementById('score-value');
   const reasonsList = document.getElementById('reasons-list');
-  const reasonsContainer = document.getElementById('reasons-container');
   const summaryText = document.getElementById('summary-text');
-  const demoToggle = document.getElementById('demo-toggle');
-  const demoCheckbox = document.getElementById('demo-checkbox');
-  const headerArea = document.getElementById('header-area');
+  const settingsPanel = document.getElementById('settings-panel');
+  const settingsToggle = document.getElementById('settings-toggle');
+  const disabledNotice = document.getElementById('disabled-notice');
+  const clearCacheBtn = document.getElementById('clear-cache-btn');
 
-  // Triple-click counter for revealing demo toggle
-  let clickCount = 0;
-  let clickTimer = null;
+  // Settings toggles
+  const enabledToggle = document.getElementById('enabled-toggle');
+  const segmentToggle = document.getElementById('segment-toggle');
+  const imageToggle = document.getElementById('image-toggle');
+  const llmToggle = document.getElementById('llm-toggle');
 
-  headerArea.addEventListener('click', () => {
-    clickCount++;
-    if (clickTimer) clearTimeout(clickTimer);
-    
-    if (clickCount >= 3) {
-      demoToggle.classList.add('visible');
-      clickCount = 0;
-    } else {
-      clickTimer = setTimeout(() => {
-        clickCount = 0;
-      }, 500);
+  // Load settings
+  const settings = await chrome.storage.sync.get([
+    'extensionEnabled',
+    'segmentAnalysis',
+    'imageAnalysis',
+    'llmTiebreaker'
+  ]);
+
+  enabledToggle.checked = settings.extensionEnabled !== false;
+  segmentToggle.checked = settings.segmentAnalysis !== false;
+  imageToggle.checked = settings.imageAnalysis !== false;
+  llmToggle.checked = settings.llmTiebreaker === true;
+
+  // Show disabled notice if extension is off
+  if (settings.extensionEnabled === false) {
+    disabledNotice.classList.add('visible');
+  }
+
+  // Settings toggle button
+  settingsToggle.addEventListener('click', () => {
+    settingsPanel.classList.toggle('active');
+  });
+
+  // Handle setting changes
+  enabledToggle.addEventListener('change', async () => {
+    await chrome.storage.sync.set({ extensionEnabled: enabledToggle.checked });
+    disabledNotice.classList.toggle('visible', !enabledToggle.checked);
+    // Reload current tab to apply changes
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab?.id) {
+      chrome.tabs.reload(tab.id);
     }
+  });
+
+  segmentToggle.addEventListener('change', async () => {
+    await chrome.storage.sync.set({ segmentAnalysis: segmentToggle.checked });
+  });
+
+  imageToggle.addEventListener('change', async () => {
+    await chrome.storage.sync.set({ imageAnalysis: imageToggle.checked });
+  });
+
+  llmToggle.addEventListener('change', async () => {
+    await chrome.storage.sync.set({ llmTiebreaker: llmToggle.checked });
+  });
+
+  // Clear cache button
+  clearCacheBtn.addEventListener('click', async () => {
+    await chrome.storage.local.remove(['pageCache', 'segmentCache', 'imageCache']);
+    clearCacheBtn.textContent = '✓ Cache Cleared';
+    setTimeout(() => {
+      clearCacheBtn.innerHTML = `
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+        </svg>
+        Clear Cache
+      `;
+    }, 2000);
   });
 
   // Get current tab info
@@ -38,109 +86,76 @@ document.addEventListener('DOMContentLoaded', async () => {
     currentTab = tab;
     if (tab?.url) {
       const url = new URL(tab.url);
-      pageUrl.textContent = url.hostname + url.pathname.slice(0, 30) + (url.pathname.length > 30 ? '...' : '');
-    } else {
-      pageUrl.textContent = 'Unknown page';
+      const displayUrl = url.hostname + (url.pathname !== '/' ? url.pathname.slice(0, 25) : '');
+      const existingSpan = pageUrl.querySelector('span');
+      if (existingSpan) existingSpan.remove();
+      const urlSpan = document.createElement('span');
+      urlSpan.textContent = displayUrl + (url.pathname.length > 25 ? '...' : '');
+      pageUrl.appendChild(urlSpan);
     }
   } catch (e) {
-    pageUrl.textContent = 'Unknown page';
+    const existingSpan = pageUrl.querySelector('span');
+    if (existingSpan) existingSpan.remove();
+    const urlSpan = document.createElement('span');
+    urlSpan.textContent = 'Unknown page';
+    pageUrl.appendChild(urlSpan);
   }
 
-  // Get demo mode status
-  chrome.runtime.sendMessage({ type: 'GET_DEMO_MODE' }, (response) => {
-    if (response) {
-      demoCheckbox.checked = response.demoMode;
-    }
-  });
-
-  // Handle demo mode toggle
-  demoCheckbox.addEventListener('change', () => {
-    chrome.runtime.sendMessage({ 
-      type: 'SET_DEMO_MODE', 
-      enabled: demoCheckbox.checked 
-    });
-  });
-
-  // Try to get cached results first, if none, trigger fresh analysis
+  // Try to get cached results
   chrome.runtime.sendMessage({ type: 'GET_LAST_ANALYSIS' }, async (result) => {
-    if (result) {
+    if (result && result.score !== undefined) {
       loadingStatus.style.display = 'none';
       resultsDiv.style.display = 'block';
       displayResults(result);
       return;
     }
 
-    // No cached result - trigger analysis from popup
-    if (currentTab?.id && currentTab?.url && !currentTab.url.startsWith('chrome')) {
-      // Request analysis directly
-      chrome.runtime.sendMessage({ 
-        type: 'ANALYZE', 
-        content: { 
-          url: currentTab.url,
-          title: currentTab.title || '',
-          headline: '',
-          description: '',
-          bodyText: ''
-        } 
-      }, (analysisResult) => {
-        loadingStatus.style.display = 'none';
-        resultsDiv.style.display = 'block';
-        if (analysisResult) {
-          displayResults(analysisResult);
-        } else {
-          displayResults({
-            riskLevel: 'medium',
-            score: 50,
-            reasons: ['Could not analyze page'],
-            summary: 'Try refreshing the page'
-          });
-        }
-      });
-    } else {
-      // Can't analyze (chrome:// page, etc.)
-      loadingStatus.style.display = 'none';
-      resultsDiv.style.display = 'block';
-      displayResults({
-        riskLevel: 'low',
-        score: 0,
-        reasons: [],
-        summary: 'This page cannot be analyzed'
-      });
-    }
+    // No cached result - show message
+    loadingStatus.innerHTML = `
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width: 40px; height: 40px; margin: 0 auto 12px; stroke: #6b7280;">
+        <path d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+      </svg>
+      <div style="color: #6b7280; font-size: 13px;">Refresh the page to analyze content</div>
+    `;
   });
 
   function displayResults(result) {
     const { riskLevel, score, reasons, summary } = result;
-    
-    // Risk badge
-    riskBadge.textContent = `${riskLevel} risk`;
-    riskBadge.className = 'risk-badge risk-' + riskLevel;
 
-    // Trust score (inverted from risk score)
-    const trustScore = 100 - score;
-    scoreValue.textContent = trustScore;
+    // Update risk badge
+    riskBadge.className = `risk-badge risk-${riskLevel}`;
+    riskBadge.textContent = riskLevel === 'high' ? 'High Risk' :
+                            riskLevel === 'medium' ? 'Medium Risk' :
+                            'Low Risk';
 
-    // Color the score based on risk
-    const colors = {
-      low: '#16a34a',
-      medium: '#ea580c',
-      high: '#dc2626'
-    };
-    scoreValue.style.color = colors[riskLevel] || colors.medium;
+    // Update score
+    scoreValue.textContent = score || 0;
 
-    // Reasons
+    // Update reasons
     reasonsList.innerHTML = '';
     if (reasons && reasons.length > 0) {
-      reasons.forEach(reason => {
+      reasons.slice(0, 5).forEach((reason, index) => {
         const li = document.createElement('li');
-        li.textContent = reason;
+        li.className = 'reason-item';
+        li.innerHTML = `
+          <div class="reason-icon">${index + 1}</div>
+          <span>${reason}</span>
+        `;
         reasonsList.appendChild(li);
       });
     } else {
-      reasonsContainer.innerHTML = '<div class="no-issues">✓ No concerns detected</div>';
+      reasonsList.innerHTML = `
+        <div class="no-issues">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M9 12l2 2 4-4"/>
+            <circle cx="12" cy="12" r="10"/>
+          </svg>
+          No significant AI indicators detected
+        </div>
+      `;
     }
 
-    // Summary
-    summaryText.textContent = summary || 'Analysis complete';
+    // Update summary
+    summaryText.textContent = summary || 'Analysis complete. Check the detection signals above for details.';
   }
 });
