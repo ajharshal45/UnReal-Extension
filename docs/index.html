@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VeriLens – AI Content Detection</title>
+
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #0b0b0f;
+      color: #ffffff;
+      line-height: 1.6;
+    }
+
+    .container {
+      max-width: 900px;
+      margin: auto;
+      padding: 48px 24px;
+    }
+
+    h1 {
+      font-size: 2.8rem;
+      margin-bottom: 8px;
+    }
+
+    h2 {
+      margin-top: 48px;
+      font-size: 1.8rem;
+    }
+
+    p {
+      color: #cfcfd8;
+      font-size: 1.05rem;
+    }
+
+    .tagline {
+      font-size: 1.2rem;
+      color: #9aa0ff;
+      margin-bottom: 24px;
+    }
+
+    .card {
+      background: #14141c;
+      border-radius: 12px;
+      padding: 24px;
+      margin-top: 24px;
+    }
+
+    ol {
+      padding-left: 20px;
+    }
+
+    li {
+      margin: 10px 0;
+    }
+
+    code {
+      background: #1e1e2a;
+      padding: 4px 6px;
+      border-radius: 6px;
+      font-size: 0.9rem;
+    }
+
+    .buttons {
+      margin-top: 32px;
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      text-decoration: none;
+      padding: 12px 18px;
+      border-radius: 8px;
+      background: #4f6bff;
+      color: white;
+      font-weight: 600;
+      transition: transform 0.1s ease, background 0.2s ease;
+    }
+
+    .btn.secondary {
+      background: #2a2a3a;
+    }
+
+    .btn:hover {
+      background: #3d56e8;
+      transform: translateY(-1px);
+    }
+
+    footer {
+      margin-top: 64px;
+      font-size: 0.9rem;
+      color: #8b8b9e;
+      text-align: center;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <h1>VeriLens</h1>
+    <div class="tagline">Detect AI-generated text, images, and videos — directly in your browser.</div>
+
+    <p>
+      VeriLens is a Chrome extension that helps users identify whether content on a webpage
+      is likely AI-generated. It works across <strong>text, images, and video</strong>, and
+      provides explainable results instead of black-box scores.
+    </p>
+
+    <div class="buttons">
+      <a class="btn" href="https://github.com/YOUR_USERNAME/YOUR_REPO" target="_blank">
+        View on GitHub
+      </a>
+      <a class="btn secondary" href="#install">
+        Install Extension
+      </a>
+    </div>
+
+    <h2 id="install">🚀 How to Install</h2>
+
+    <div class="card">
+      <ol>
+        <li>Download the repository from GitHub (<strong>Code → Download ZIP</strong>)</li>
+        <li>Extract the ZIP file</li>
+        <li>Open <code>chrome://extensions</code> in Chrome</li>
+        <li>Enable <strong>Developer Mode</strong> (top-right)</li>
+        <li>Click <strong>Load unpacked</strong></li>
+        <li>Select the <code>/extension</code> folder</li>
+      </ol>
+    </div>
+
+    <h2>✨ Key Features</h2>
+
+    <div class="card">
+      <ul>
+        <li>🔍 Detect AI-generated text on webpages</li>
+        <li>🖼️ Identify AI-generated images</li>
+        <li>🎥 Analyze videos for deepfake artifacts</li>
+        <li>🧠 Explainable results — see <em>why</em> content is flagged</li>
+        <li>⚡ Runs directly from the browser via a lightweight backend</li>
+      </ul>
+    </div>
+
+    <h2>🛠 Tech Stack</h2>
+
+    <div class="card">
+      <ul>
+        <li>Chrome Extension (Manifest V3)</li>
+        <li>Google Cloud / Vertex AI (model inference)</li>
+        <li>Cloud Run API backend</li>
+        <li>GitHub Pages for distribution</li>
+      </ul>
+    </div>
+
+    <footer>
+      Built as a research & demo project • Not a definitive source of truth
+    </footer>
+  </div>
+</body>
+</html>
