@@ -105,6 +105,22 @@
         console.log('ShareSafe: Pure statistical analysis (no LLM calls)');
       }
 
+      // Send results to background for popup
+      chrome.runtime.sendMessage({
+        type: 'STORE_ANALYSIS',
+        data: {
+          riskLevel: pageAnalysis.riskLevel,
+          score: pageAnalysis.pageScore,
+          reasons: pageAnalysis.segments
+            .filter(s => s.shouldReview)
+            .slice(0, 5)
+            .map(s => s.reasons[0])
+            .filter(Boolean),
+          summary: pageAnalysis.summary,
+          url: location.href
+        }
+      });
+
       // Highlight segments
       pageAnalysis.segments.forEach(segScore => {
         if (segScore.shouldReview || segScore.score >= 35) {
@@ -120,8 +136,8 @@
         createSummaryPanel(pageAnalysis);
       }
 
-      // Also update the floating badge with page-level score
-      updateFloatingBadge(pageAnalysis);
+      // Floating badge disabled - use popup instead
+      // updateFloatingBadge(pageAnalysis);
 
     } catch (error) {
       console.error('ShareSafe: Segment analysis error:', error);
@@ -267,7 +283,8 @@
   // ═══════════════════════════════════════════════════════════════
 
   function init() {
-    createFloatingBadge();
+    // Floating badge disabled - use popup instead
+    // createFloatingBadge();
     
     // Run analysis after short delay to let page settle
     setTimeout(async () => {

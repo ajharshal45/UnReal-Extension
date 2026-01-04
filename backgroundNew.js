@@ -11,6 +11,10 @@ let DEMO_MODE = false;
 const LLM_SCORE_MIN = 35; // Only use LLM if stat score >= this
 const LLM_SCORE_MAX = 65; // Only use LLM if stat score <= this
 
+// In-memory storage for latest analysis
+let lastAnalysis = null;
+let lastAnalysisTimestamp = 0;
+
 // Check if API key exists
 chrome.storage.sync.get(['geminiApiKey'], (data) => {
   if (!data.geminiApiKey) {
@@ -83,14 +87,37 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   // Legacy page analysis (for popup)
-  if (message.type === 'GET_PAGE_ANALYSIS') {
+  if (message.type === 'GET_PAGE_ANALYSIS' || message.type === 'GET_LAST_ANALYSIS') {
     (async () => {
       try {
+        // Return in-memory analysis if recent (within 5 minutes)
+        if (lastAnalysis && (Date.now() - lastAnalysisTimestamp) < 300000) {
+          sendResponse(lastAnalysis);
+          return;
+        }
+        
+        // Otherwise try to get from cache
         const cached = await getLastPageAnalysis();
         sendResponse(cached);
       } catch (error) {
         console.error('ShareSafe: Error getting page analysis', error);
         sendResponse(null);
+      }
+    })();
+    return true;
+  }
+
+  // Store analysis from content script
+  if (message.type === 'STORE_ANALYSIS') {
+    (async () => {
+      try {
+        // Store in memory for quick popup access
+        lastAnalysis = message.data;
+        lastAnalysisTimestamp = Date.now();
+        sendResponse({ success: true });
+      } catch (error) {
+        console.error('ShareSafe: Error storing analysis', error);
+        sendResponse({ success: false });
       }
     })();
     return true;
