@@ -57,6 +57,13 @@
       return;
     }
 
+    // Skip analysis for very short content
+    const pageText = document.body.innerText;
+    if (pageText.length < 300) {
+      console.log('ShareSafe: Content too short (<300 chars), skipping analysis');
+      return;
+    }
+
     console.log('ShareSafe: Starting segment-based analysis...');
 
     try {

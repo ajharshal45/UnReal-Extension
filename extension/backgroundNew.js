@@ -8,8 +8,8 @@ import { analyzeWithGemini } from './gemini.js';
 // ═══════════════════════════════════════════════════════════════
 
 let DEMO_MODE = false;
-const LLM_SCORE_MIN = 35; // Only use LLM if stat score >= this
-const LLM_SCORE_MAX = 65; // Only use LLM if stat score <= this
+const LLM_SCORE_MIN = 25; // Only use LLM if stat score >= this
+const LLM_SCORE_MAX = 75; // Only use LLM if stat score <= this
 
 // In-memory storage for latest analysis
 let lastAnalysis = null;
