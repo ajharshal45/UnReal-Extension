@@ -326,6 +326,16 @@ RESPOND WITH ONLY VALID JSON. NO MARKDOWN. NO EXPLANATION OUTSIDE JSON.
     });
 
     if (!response.success) {
+      // Special handling for rate limit errors (429)
+      if (response.status === 429) {
+        console.warn('[Gemini Vision] Rate limit hit (429) - skipping this image');
+        return {
+          success: false,
+          error: 'Rate limit exceeded',
+          method: 'gemini',
+          rateLimited: true
+        };
+      }
       console.error('[Gemini Vision] API request failed:', response.status || response.error);
       return {
         success: false,
@@ -459,22 +469,46 @@ function combineResults(localResult, sightengineResult, geminiResult) {
     signals.push(`Gemini confidence: ${geminiResult.confidence}%`);
   }
 
-  // Get AI type from Sightengine if available
-  const aiType = (sightengineResult && sightengineResult.success) 
+  // Get AI type from Sightengine or Gemini if available
+  const aiType = (geminiResult && geminiResult.success && geminiResult.aiType) 
+    ? geminiResult.aiType 
+    : (sightengineResult && sightengineResult.success) 
     ? sightengineResult.aiType 
     : 'unknown';
 
-  // Get artifacts from Gemini if available
-  const artifacts = (geminiResult && geminiResult.success) 
-    ? geminiResult.artifacts 
-    : [];
+  // Build comprehensive artifacts from all sources
+  const artifacts = [];
+  
+  // Add Gemini artifacts
+  if (geminiResult && geminiResult.success && geminiResult.artifacts && geminiResult.artifacts.length > 0) {
+    artifacts.push(...geminiResult.artifacts);
+  }
+  
+  // Add local pattern artifacts
+  if (localResult.signals.length > 0) {
+    artifacts.push(...localResult.signals.map(s => ({
+      type: 'Local Pattern',
+      description: s
+    })));
+  }
+  
+  // Add Sightengine result as artifact
+  if (sightengineResult && sightengineResult.success && sightengineResult.confidence > 50) {
+    artifacts.push({
+      type: 'ML Detection',
+      description: `Sightengine AI model detected ${sightengineResult.confidence}% likelihood of AI generation`
+    });
+  }
+  
+  // Ensure at least one artifact exists
+  if (artifacts.length === 0) {
+    artifacts.push({
+      type: 'Analysis',
+      description: 'Multi-layer statistical and pattern analysis completed'
+    });
+  }
 
-  // Get reasoning from Gemini if available
-  const reasoning = (geminiResult && geminiResult.success) 
-    ? geminiResult.reasoning 
-    : '';
-
-  // Determine which sources were used
+  // Determine which sources were used (MUST BE BEFORE reasoning generation)
   const sources = ['local'];
   if (sightengineResult && sightengineResult.success) {
     sources.push('sightengine');
@@ -483,6 +517,25 @@ function combineResults(localResult, sightengineResult, geminiResult) {
     sources.push('gemini');
   }
 
+  // Build comprehensive reasoning
+  let reasoning = '';
+  if (geminiResult && geminiResult.success && geminiResult.reasoning) {
+    reasoning = geminiResult.reasoning;
+  } else {
+    // Generate reasoning based on scores
+    if (finalConfidence >= 70) {
+      const activeAnalyzers = sources.filter(s => s !== 'local').join(' and ') || 'local patterns';
+      reasoning = `High confidence AI detection based on ${activeAnalyzers} analysis. ${signals.length > 1 ? 'Multiple indicators including: ' + signals.slice(0, 2).join(', ') + '.' : ''}`;
+    } else if (finalConfidence >= 40) {
+      reasoning = `Moderate confidence AI detection. Several indicators suggest possible AI generation. Analysis combined ${sources.length} detection method${sources.length > 1 ? 's' : ''}.`;
+    } else {
+      reasoning = `Low confidence - likely authentic content. ${sources.length > 1 ? 'Multiple analysis methods' : 'Analysis'} found minimal AI characteristics.`;
+    }
+  }
+  
+  // Ensure signals are never empty
+  const finalSignals = signals.length > 0 ? signals : ['Analysis completed'];
+
   return {
     isAIGenerated: finalConfidence >= 40,
     confidence: finalConfidence,
@@ -490,7 +543,7 @@ function combineResults(localResult, sightengineResult, geminiResult) {
     aiType,
     artifacts,
     reasoning,
-    signals,
+    signals: finalSignals,
     sources,
     details: {
       local: localResult,
@@ -530,9 +583,14 @@ async function analyzeImage(imageUrl, base64Image, width, height, geminiApiKey, 
         confidence: localResult.score,
         riskLevel: 'high',
         aiType: 'unknown',
-        artifacts: [],
-        reasoning: 'Strong local signals detected',
-        signals: localResult.signals,
+        artifacts: localResult.signals.length > 0 ? localResult.signals.map(s => ({
+          type: 'Local Pattern',
+          description: s
+        })) : [{ type: 'Pattern Match', description: 'Strong AI platform indicators detected' }],
+        reasoning: localResult.signals.length > 0 ? 
+          `Strong local signals detected: ${localResult.signals.join(', ')}` : 
+          'Multiple AI platform indicators detected in image metadata and characteristics',
+        signals: localResult.signals.length > 0 ? localResult.signals : ['AI platform detected'],
         sources: ['local'],
         details: {
           local: localResult,

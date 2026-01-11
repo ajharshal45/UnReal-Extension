@@ -159,16 +159,23 @@
     constructor() {
       this.queue = [];
       this.processing = 0;
-      this.maxConcurrent = 3;
+      this.maxConcurrent = 2; // Reduced from 3 to 2 to avoid rate limits
       this.checkedImages = new Set();
       this.analysisResults = new Map();
       this.mutationObserver = null;
       this.intersectionObserver = null;
       this.geminiApiKey = null;
+      this.sightengineUser = null;
+      this.sightengineSecret = null;
       this.aiImageCount = 0;
       this.isEnabled = true;
-      this.processDelay = 500;
+      this.processDelay = 800; // Increased from 500ms to 800ms
       this.lastProcessTime = 0;
+      
+      // Gemini rate limiting (free tier: 15 requests per minute)
+      this.geminiRequestTimes = [];
+      this.geminiMaxPerMinute = 2; // Testing: 2 requests per minute
+      this.geminiMinDelay = 6000; // Minimum 6 seconds between Gemini requests
 
       // Trusted domains to skip
       this.trustedDomains = [
@@ -258,6 +265,39 @@
           });
         });
       });
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // RATE LIMITING
+    // ═══════════════════════════════════════════════════════════════
+
+    canMakeGeminiRequest() {
+      if (!this.geminiApiKey) return false;
+      
+      const now = Date.now();
+      const oneMinuteAgo = now - 60000;
+      
+      // Remove old timestamps
+      this.geminiRequestTimes = this.geminiRequestTimes.filter(time => time > oneMinuteAgo);
+      
+      // Check if we've hit the rate limit
+      if (this.geminiRequestTimes.length >= this.geminiMaxPerMinute) {
+        console.log('[ImageScanner] Gemini rate limit reached, skipping');
+        return false;
+      }
+      
+      // Check minimum delay between requests
+      const lastRequest = this.geminiRequestTimes[this.geminiRequestTimes.length - 1] || 0;
+      if (now - lastRequest < this.geminiMinDelay) {
+        console.log('[ImageScanner] Gemini minimum delay not met, skipping');
+        return false;
+      }
+      
+      return true;
+    }
+
+    recordGeminiRequest() {
+      this.geminiRequestTimes.push(Date.now());
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -369,12 +409,13 @@
           position: fixed !important;
           background: white !important;
           border-radius: 12px !important;
-          box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3) !important;
-          z-index: 9999999 !important;
+          box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5), 0 0 0 9999px rgba(0, 0, 0, 0) !important;
+          z-index: 2147483647 !important;
           max-width: 380px !important;
           min-width: 300px !important;
           font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
           overflow: hidden !important;
+          pointer-events: auto !important;
         }
 
         .unreal-details-header {
@@ -546,8 +587,9 @@
           left: 0 !important;
           right: 0 !important;
           bottom: 0 !important;
-          background: rgba(0, 0, 0, 0.3) !important;
-          z-index: 9999998 !important;
+          background: rgba(0, 0, 0, 0.5) !important;
+          z-index: 2147483646 !important;
+          pointer-events: auto !important;
         }
       `;
       document.head.appendChild(style);
@@ -834,16 +876,29 @@
           console.warn('[ImageScanner] Could not convert to base64:', e.message);
         }
 
+        // Check if we can use Gemini (rate limiting)
+        const useGemini = this.canMakeGeminiRequest();
+        const geminiApiKey = useGemini ? this.geminiApiKey : null;
+        
+        if (!useGemini && this.geminiApiKey) {
+          console.log('[ImageScanner] Skipping Gemini for this image due to rate limits');
+        }
+
         // Call analyzeImage from imageDetector
         const result = await this.imageDetector.analyzeImage(
           imageUrl,
           base64Image,
           width,
           height,
-          this.geminiApiKey,
+          geminiApiKey,
           this.sightengineUser,
           this.sightengineSecret
         );
+        
+        // Record Gemini request if it was used
+        if (useGemini && result.sources?.includes('gemini')) {
+          this.recordGeminiRequest();
+        }
 
         // Store result
         this.analysisResults.set(img.src, result);
@@ -1122,6 +1177,8 @@
     // ═══════════════════════════════════════════════════════════════
 
     showDetails(img, result) {
+      console.log('[ImageScanner] showDetails called for:', result);
+      
       // Remove existing popup
       this.closeDetails();
 
@@ -1136,27 +1193,45 @@
       popup.className = 'unreal-details-popup';
       popup.id = 'unreal-details-popup';
 
-      // Position popup near image
+      // Position popup in center of viewport (fixed positioning)
       const imgRect = img.getBoundingClientRect();
-      let top = imgRect.top + window.scrollY;
-      let left = imgRect.right + 10 + window.scrollX;
+      
+      // Try to position next to image first
+      let top = imgRect.top;
+      let left = imgRect.right + 10;
 
-      // Adjust if off screen
+      // Check if popup would go off screen horizontally
       if (left + 380 > window.innerWidth) {
-        left = imgRect.left - 390 + window.scrollX;
+        // Try positioning on the left side
+        left = imgRect.left - 390;
+        
+        // If still off screen, center it
+        if (left < 10) {
+          left = (window.innerWidth - 380) / 2;
+          top = (window.innerHeight - 500) / 2;
+        }
       }
-      if (left < 10) {
-        left = 10;
-      }
-      if (top + 500 > window.innerHeight + window.scrollY) {
-        top = window.innerHeight + window.scrollY - 510;
+      
+      // Check if popup would go off screen vertically
+      if (top + 500 > window.innerHeight) {
+        top = window.innerHeight - 510;
       }
       if (top < 10) {
         top = 10;
       }
+      
+      // Ensure left is within bounds
+      if (left < 10) {
+        left = 10;
+      }
+      if (left + 380 > window.innerWidth) {
+        left = window.innerWidth - 390;
+      }
 
       popup.style.top = `${top}px`;
       popup.style.left = `${left}px`;
+      
+      console.log('[ImageScanner] Popup positioned at:', { top, left });
 
       // Risk level text
       const riskText = {
@@ -1251,6 +1326,13 @@
       `;
 
       document.body.appendChild(popup);
+      
+      console.log('[ImageScanner] Popup added to DOM:', {
+        popupExists: !!document.getElementById('unreal-details-popup'),
+        backdropExists: !!document.querySelector('.unreal-overlay-backdrop'),
+        popupVisible: popup.offsetHeight > 0,
+        popupPosition: { top: popup.style.top, left: popup.style.left }
+      });
     }
 
     closeDetails() {
