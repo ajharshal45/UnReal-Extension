@@ -1,0 +1,20 @@
+# Environment variables (not tracked in git)
+.env
+
+# Node modules
+node_modules/
+
+# Build files
+dist/
+build/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

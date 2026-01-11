@@ -32,6 +32,105 @@ chrome.storage.sync.get(['geminiApiKey'], (data) => {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   
+  // Sightengine API call (proxied through background)
+  if (message.type === 'CALL_SIGHTENGINE_API') {
+    (async () => {
+      try {
+        const { imageUrl, base64Image, apiUser, apiSecret } = message.data;
+        
+        let response;
+        if (imageUrl && !imageUrl.startsWith('data:')) {
+          // URL-based
+          const params = new URLSearchParams({
+            url: imageUrl,
+            models: 'genai',
+            api_user: apiUser,
+            api_secret: apiSecret
+          });
+          response = await fetch(`https://api.sightengine.com/1.0/check.json?${params}`);
+        } else if (base64Image) {
+          // Base64-based
+          const base64Data = base64Image.split(',')[1] || base64Image;
+          const byteCharacters = atob(base64Data);
+          const byteNumbers = new Array(byteCharacters.length);
+          for (let i = 0; i < byteCharacters.length; i++) {
+            byteNumbers[i] = byteCharacters.charCodeAt(i);
+          }
+          const byteArray = new Uint8Array(byteNumbers);
+          const blob = new Blob([byteArray], { type: 'image/jpeg' });
+          
+          const formData = new FormData();
+          formData.append('media', blob, 'image.jpg');
+          formData.append('models', 'genai');
+          formData.append('api_user', apiUser);
+          formData.append('api_secret', apiSecret);
+          
+          response = await fetch('https://api.sightengine.com/1.0/check.json', {
+            method: 'POST',
+            body: formData
+          });
+        } else {
+          sendResponse({ success: false, error: 'No image data provided' });
+          return;
+        }
+        
+        const data = await response.json();
+        sendResponse({ success: response.ok, data, status: response.status });
+      } catch (error) {
+        console.error('[Background] Sightengine API error:', error);
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    return true;
+  }
+  
+  // Gemini Vision API call (proxied through background)
+  if (message.type === 'CALL_GEMINI_VISION_API') {
+    (async () => {
+      try {
+        const { base64Image, apiKey, prompt } = message.data;
+        
+        const cleanBase64 = base64Image.includes(',') ? base64Image.split(',')[1] : base64Image;
+        
+        const requestBody = {
+          contents: [{
+            parts: [
+              { text: prompt },
+              {
+                inline_data: {
+                  mime_type: 'image/jpeg',
+                  data: cleanBase64
+                }
+              }
+            ]
+          }],
+          generationConfig: {
+            temperature: 0.1,
+            maxOutputTokens: 1024
+          }
+        };
+        
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(requestBody)
+          }
+        );
+        
+        const data = await response.json();
+        sendResponse({ success: response.ok, data, status: response.status });
+      } catch (error) {
+        console.error('[Background] Gemini Vision API error:', error);
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    return true;
+  }
+  
   // Analyze image with LLM (tie-breaker only)
   if (message.type === 'ANALYZE_IMAGE') {
     (async () => {

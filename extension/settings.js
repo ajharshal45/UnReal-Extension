@@ -2,6 +2,8 @@
 
 document.addEventListener('DOMContentLoaded', async () => {
   const apiKeyInput = document.getElementById('api-key');
+  const sightengineUserInput = document.getElementById('sightengine-user');
+  const sightengineSecretInput = document.getElementById('sightengine-secret');
   const saveBtn = document.getElementById('save-btn');
   const statusMsg = document.getElementById('status-msg');
   const currentKeyDiv = document.getElementById('current-key');
@@ -32,6 +34,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   try {
     const data = await chrome.storage.sync.get([
       'geminiApiKey',
+      'sightengineUser',
+      'sightengineSecret',
       'extensionEnabled',
       'segmentAnalysis',
       'imageAnalysis',
@@ -56,6 +60,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       llmStatusDiv.style.background = '#eff6ff';
       llmStatusDiv.style.color = '#3b82f6';
       llmStatusDiv.innerHTML = '📊 Statistical Analysis Mode - Works great without API key!';
+    }
+    
+    // Sightengine Credentials
+    if (data.sightengineUser) {
+      sightengineUserInput.value = data.sightengineUser;
+    }
+    if (data.sightengineSecret) {
+      sightengineSecretInput.value = data.sightengineSecret;
     }
     
     // Insert status after save button
@@ -87,34 +99,48 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Save API Key
   saveBtn.addEventListener('click', async () => {
     const key = apiKeyInput.value.trim();
+    const sightengineUser = sightengineUserInput.value.trim();
+    const sightengineSecret = sightengineSecretInput.value.trim();
 
-    if (!key) {
-      showStatus('Please enter an API key', 'error');
-      return;
-    }
-
-    if (key.length < 20) {
-      showStatus('API key seems too short', 'error');
+    // Validate Gemini API key if provided
+    if (key && key.length < 20) {
+      showStatus('Gemini API key seems too short', 'error');
       return;
     }
 
     try {
-      await chrome.storage.sync.set({ geminiApiKey: key });
+      const dataToSave = {};
       
-      const masked = '••••••••' + key.slice(-4);
-      maskedKeySpan.textContent = masked;
-      currentKeyDiv.style.display = 'block';
-      apiKeyInput.value = '';
+      // Save Gemini API key if provided
+      if (key) {
+        dataToSave.geminiApiKey = key;
+      }
       
-      // Update LLM status
-      llmStatusDiv.style.background = '#dcfce7';
-      llmStatusDiv.style.color = '#16a34a';
-      llmStatusDiv.innerHTML = '✅ LLM Tie-Breaker Available - API key configured';
+      // Save Sightengine credentials if both provided
+      if (sightengineUser && sightengineSecret) {
+        dataToSave.sightengineUser = sightengineUser;
+        dataToSave.sightengineSecret = sightengineSecret;
+      }
       
-      showStatus('API key saved successfully!', 'success');
+      await chrome.storage.sync.set(dataToSave);
+      
+      // Update UI for Gemini key
+      if (key) {
+        const masked = '••••••••' + key.slice(-4);
+        maskedKeySpan.textContent = masked;
+        currentKeyDiv.style.display = 'block';
+        apiKeyInput.value = '';
+        
+        // Update LLM status
+        llmStatusDiv.style.background = '#dcfce7';
+        llmStatusDiv.style.color = '#16a34a';
+        llmStatusDiv.innerHTML = '✅ LLM Tie-Breaker Available - API key configured';
+      }
+      
+      showStatus('API credentials saved successfully!', 'success');
     } catch (e) {
-      console.error('Error saving API key:', e);
-      showStatus('Failed to save API key', 'error');
+      console.error('Error saving API credentials:', e);
+      showStatus('Failed to save API credentials', 'error');
     }
   });
 
