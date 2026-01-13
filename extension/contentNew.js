@@ -1,8 +1,11 @@
 // ShareSafe Content Script v2.0 - Segment-Based AI Detection
 // Integrates all new modules for sophisticated AI content analysis
 
+// Import the new layered analysis pipeline
+import { ImageAnalysisPipeline } from './imageAnalysisPipeline.js';
+
 // Check if extension is enabled
-(async function() {
+(async function () {
   // Prevent multiple injections
   if (window.__sharesafe_injected__) return;
   window.__sharesafe_injected__ = true;
@@ -25,7 +28,7 @@
 
   // Check exclude/include lists
   const currentDomain = location.hostname;
-  
+
   if (settings.excludeList && settings.excludeList.length > 0) {
     if (settings.excludeList.some(domain => currentDomain.includes(domain))) {
       console.log('ShareSafe: Domain excluded');
@@ -51,7 +54,7 @@
 
   async function analyzePageWithSegments() {
     const segmentAnalysisEnabled = settings.segmentAnalysis !== false;
-    
+
     if (!segmentAnalysisEnabled) {
       console.log('ShareSafe: Segment analysis disabled, using legacy mode');
       return;
@@ -69,15 +72,15 @@
     try {
       // Import modules dynamically
       const { analyzePageSegments } = await import(chrome.runtime.getURL('segmentAnalyzer.js'));
-      const { 
-        injectHighlightStyles, 
-        highlightSegment, 
-        createSummaryPanel 
+      const {
+        injectHighlightStyles,
+        highlightSegment,
+        createSummaryPanel
       } = await import(chrome.runtime.getURL('visualHighlighter.js'));
-      const { 
-        getCached, 
-        setCached, 
-        generatePageCacheKey 
+      const {
+        getCached,
+        setCached,
+        generatePageCacheKey
       } = await import(chrome.runtime.getURL('cacheManager.js'));
 
       // Inject styles
@@ -171,7 +174,11 @@
       this.isEnabled = true;
       this.processDelay = 800; // Increased from 500ms to 800ms
       this.lastProcessTime = 0;
-      
+
+      // NEW: Image Analysis Pipeline (layers 0-4)
+      this.pipeline = new ImageAnalysisPipeline();
+      this.pipelineInitialized = false;
+
       // Gemini rate limiting (free tier: 15 requests per minute)
       this.geminiRequestTimes = [];
       this.geminiMaxPerMinute = 2; // Testing: 2 requests per minute
@@ -212,12 +219,12 @@
         // Get API keys
         this.geminiApiKey = await this.getGeminiApiKey();
         console.log('[ImageScanner] Gemini API key loaded:', this.geminiApiKey ? 'Yes' : 'No');
-        
+
         // Get Sightengine credentials
         const sightengineCredentials = await this.getSightengineCredentials();
         this.sightengineUser = sightengineCredentials.user;
         this.sightengineSecret = sightengineCredentials.secret;
-        console.log('[ImageScanner] Sightengine credentials loaded:', 
+        console.log('[ImageScanner] Sightengine credentials loaded:',
           (this.sightengineUser && this.sightengineSecret) ? 'Yes' : 'No');
 
         // Inject styles
@@ -273,26 +280,26 @@
 
     canMakeGeminiRequest() {
       if (!this.geminiApiKey) return false;
-      
+
       const now = Date.now();
       const oneMinuteAgo = now - 60000;
-      
+
       // Remove old timestamps
       this.geminiRequestTimes = this.geminiRequestTimes.filter(time => time > oneMinuteAgo);
-      
+
       // Check if we've hit the rate limit
       if (this.geminiRequestTimes.length >= this.geminiMaxPerMinute) {
         console.log('[ImageScanner] Gemini rate limit reached, skipping');
         return false;
       }
-      
+
       // Check minimum delay between requests
       const lastRequest = this.geminiRequestTimes[this.geminiRequestTimes.length - 1] || 0;
       if (now - lastRequest < this.geminiMinDelay) {
         console.log('[ImageScanner] Gemini minimum delay not met, skipping');
         return false;
       }
-      
+
       return true;
     }
 
@@ -605,13 +612,13 @@
 
       // Get all standard images
       const images = document.querySelectorAll('img');
-      
+
       // Get platform-specific images if on social media
       const platformImages = this.getPlatformImages();
 
       // Combine and dedupe
       const allImages = new Set([...images, ...platformImages]);
-      
+
       console.log(`[ImageScanner] Found ${allImages.size} images on page`);
 
       allImages.forEach(img => {
@@ -645,7 +652,7 @@
       elements.forEach(el => {
         const style = getComputedStyle(el);
         const bgImage = style.backgroundImage;
-        
+
         if (bgImage && bgImage !== 'none' && bgImage.includes('url(')) {
           const urlMatch = bgImage.match(/url\(['"]?([^'"]+)['"]?\)/);
           if (urlMatch && urlMatch[1]) {
@@ -729,9 +736,9 @@
           });
 
           // Check for src attribute changes
-          if (mutation.type === 'attributes' && 
-              mutation.attributeName === 'src' && 
-              mutation.target.tagName === 'IMG') {
+          if (mutation.type === 'attributes' &&
+            mutation.attributeName === 'src' &&
+            mutation.target.tagName === 'IMG') {
             this.handleNewImage(mutation.target);
           }
         });
@@ -839,7 +846,7 @@
       }
 
       this.processing--;
-      
+
       // Process next in queue (use requestIdleCallback for non-urgent)
       if (typeof requestIdleCallback !== 'undefined') {
         requestIdleCallback(() => this.processQueue());
@@ -863,40 +870,20 @@
       const spinner = this.showSpinner(img);
 
       try {
-        // Extract image data
-        const imageUrl = img.src;
-        const width = img.naturalWidth || img.width;
-        const height = img.naturalHeight || img.height;
-
-        // Convert to base64
-        let base64Image = null;
-        try {
-          base64Image = await this.imageToBase64(img);
-        } catch (e) {
-          console.warn('[ImageScanner] Could not convert to base64:', e.message);
+        // Initialize pipeline if not already done
+        if (!this.pipelineInitialized) {
+          await this.pipeline.initialize();
+          this.pipelineInitialized = true;
         }
 
-        // Check if we can use Gemini (rate limiting)
-        const useGemini = this.canMakeGeminiRequest();
-        const geminiApiKey = useGemini ? this.geminiApiKey : null;
-        
-        if (!useGemini && this.geminiApiKey) {
-          console.log('[ImageScanner] Skipping Gemini for this image due to rate limits');
-        }
+        // Use the new layered analysis pipeline
+        const pipelineResult = await this.pipeline.analyze(img);
 
-        // Call analyzeImage from imageDetector
-        const result = await this.imageDetector.analyzeImage(
-          imageUrl,
-          base64Image,
-          width,
-          height,
-          geminiApiKey,
-          this.sightengineUser,
-          this.sightengineSecret
-        );
-        
-        // Record Gemini request if it was used
-        if (useGemini && result.sources?.includes('gemini')) {
+        // Convert pipeline result to format expected by existing UI code
+        const result = this._convertPipelineResult(pipelineResult);
+
+        // Record Gemini request if Layer 4 was used
+        if (pipelineResult.layers?.layer4 && !pipelineResult.layers.layer4.skipped) {
           this.recordGeminiRequest();
         }
 
@@ -934,6 +921,63 @@
     }
 
     // ═══════════════════════════════════════════════════════════════
+    // PIPELINE RESULT CONVERSION
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Convert new pipeline output to format expected by existing displayResult/showBadge
+     */
+    _convertPipelineResult(pipelineResult) {
+      return {
+        isAIGenerated: pipelineResult.isAIGenerated,
+        confidence: pipelineResult.finalScore,
+        riskLevel: pipelineResult.riskLevel,
+        artifacts: pipelineResult.allArtifacts || [],
+        reasoning: pipelineResult.reasoning,
+        sources: this._getSources(pipelineResult),
+        signals: this._getSignals(pipelineResult),
+        details: pipelineResult.layers,
+        processingTime: pipelineResult.processingTime?.total || 0
+      };
+    }
+
+    /**
+     * Get list of sources used in analysis
+     */
+    _getSources(pipelineResult) {
+      const sources = ['local'];  // Layers 0, 1, 2 are local analysis
+
+      if (pipelineResult.layers?.layer4 && !pipelineResult.layers.layer4.skipped) {
+        sources.push('gemini');
+      }
+
+      return sources;
+    }
+
+    /**
+     * Extract signals from pipeline artifacts for backward compatibility
+     */
+    _getSignals(pipelineResult) {
+      const signals = [];
+
+      // Add layer 0 signals
+      if (pipelineResult.layers?.layer0?.signals) {
+        pipelineResult.layers.layer0.signals.forEach(s => {
+          signals.push(s.description || s.matched || s.type);
+        });
+      }
+
+      // Add high-confidence artifacts as signals
+      (pipelineResult.allArtifacts || []).forEach(artifact => {
+        if (artifact.confidence >= 60) {
+          signals.push(artifact.description);
+        }
+      });
+
+      return signals.slice(0, 5);  // Limit to 5 signals
+    }
+
+    // ═══════════════════════════════════════════════════════════════
     // IMAGE TO BASE64 CONVERSION
     // ═══════════════════════════════════════════════════════════════
 
@@ -946,11 +990,11 @@
           canvas.height = img.naturalHeight || img.height;
 
           const ctx = canvas.getContext('2d');
-          
+
           // Create a new image with crossOrigin for CORS images
           const corsImg = new Image();
           corsImg.crossOrigin = 'anonymous';
-          
+
           corsImg.onload = () => {
             try {
               ctx.drawImage(corsImg, 0, 0);
@@ -1043,7 +1087,7 @@
 
       const wrapper = document.createElement('div');
       wrapper.className = 'unreal-image-wrapper';
-      
+
       // Copy position styles
       const computedStyle = getComputedStyle(img);
       if (computedStyle.position === 'absolute' || computedStyle.position === 'fixed') {
@@ -1056,7 +1100,7 @@
 
       parent.insertBefore(wrapper, img);
       wrapper.appendChild(img);
-      
+
       console.log('[ImageScanner] Image wrapped successfully');
     }
 
@@ -1071,7 +1115,7 @@
         isAIGenerated: result.isAIGenerated,
         imgSrc: img.src?.substring(0, 60)
       });
-      
+
       // Show badges for ANY analyzed image (even low confidence for debugging)
       // This helps users see the extension is working
       if (result.confidence < 20 && result.signals.length === 0) {
@@ -1085,7 +1129,7 @@
       // Add border based on risk level
       img.classList.remove('unreal-image-border-high', 'unreal-image-border-medium', 'unreal-image-border-low');
       img.classList.add(`unreal-image-border-${result.riskLevel}`);
-      
+
       console.log('[ImageScanner] Border added:', img.classList);
 
       // Show badge
@@ -1098,7 +1142,7 @@
 
     showBadge(img, result) {
       console.log('[ImageScanner] showBadge called for:', img.src?.substring(0, 60));
-      
+
       // Remove existing badge
       const existingBadge = img.parentElement?.querySelector('.unreal-image-badge');
       if (existingBadge) {
@@ -1146,10 +1190,10 @@
         console.error('[ImageScanner] No wrapper found for image');
         return;
       }
-      
+
       wrapper.style.position = 'relative';
       wrapper.appendChild(badge);
-      
+
       console.log('[ImageScanner] Badge appended successfully:', {
         badgeClass: badge.className,
         wrapperClass: wrapper.className,
@@ -1178,7 +1222,7 @@
 
     showDetails(img, result) {
       console.log('[ImageScanner] showDetails called for:', result);
-      
+
       // Remove existing popup
       this.closeDetails();
 
@@ -1195,7 +1239,7 @@
 
       // Position popup in center of viewport (fixed positioning)
       const imgRect = img.getBoundingClientRect();
-      
+
       // Try to position next to image first
       let top = imgRect.top;
       let left = imgRect.right + 10;
@@ -1204,14 +1248,14 @@
       if (left + 380 > window.innerWidth) {
         // Try positioning on the left side
         left = imgRect.left - 390;
-        
+
         // If still off screen, center it
         if (left < 10) {
           left = (window.innerWidth - 380) / 2;
           top = (window.innerHeight - 500) / 2;
         }
       }
-      
+
       // Check if popup would go off screen vertically
       if (top + 500 > window.innerHeight) {
         top = window.innerHeight - 510;
@@ -1219,7 +1263,7 @@
       if (top < 10) {
         top = 10;
       }
-      
+
       // Ensure left is within bounds
       if (left < 10) {
         left = 10;
@@ -1230,7 +1274,7 @@
 
       popup.style.top = `${top}px`;
       popup.style.left = `${left}px`;
-      
+
       console.log('[ImageScanner] Popup positioned at:', { top, left });
 
       // Risk level text
@@ -1255,7 +1299,7 @@
       // Build signals
       let signalsHtml = '';
       if (result.signals && result.signals.length > 0) {
-        signalsHtml = result.signals.map(s => 
+        signalsHtml = result.signals.map(s =>
           `<span class="unreal-signal-tag">${s}</span>`
         ).join('');
       }
@@ -1263,7 +1307,7 @@
       // Build sources
       let sourcesHtml = '';
       if (result.sources && result.sources.length > 0) {
-        sourcesHtml = result.sources.map(s => 
+        sourcesHtml = result.sources.map(s =>
           `<span class="unreal-source-tag">${s}</span>`
         ).join('');
       }
@@ -1326,7 +1370,7 @@
       `;
 
       document.body.appendChild(popup);
-      
+
       console.log('[ImageScanner] Popup added to DOM:', {
         popupExists: !!document.getElementById('unreal-details-popup'),
         backdropExists: !!document.querySelector('.unreal-overlay-backdrop'),
@@ -1368,10 +1412,10 @@
     destroy() {
       console.log('[ImageScanner] Cleaning up...');
       this.isEnabled = false;
-      
+
       this.mutationObserver?.disconnect();
       this.intersectionObserver?.disconnect();
-      
+
       this.queue = [];
       this.checkedImages.clear();
       this.analysisResults.clear();
@@ -1379,7 +1423,7 @@
       // Remove all badges and wrappers
       document.querySelectorAll('.unreal-image-badge').forEach(el => el.remove());
       document.querySelectorAll('.unreal-spinner-overlay').forEach(el => el.remove());
-      
+
       this.closeDetails();
 
       console.log('[ImageScanner] Cleanup complete');
@@ -1391,7 +1435,7 @@
 
   async function analyzePageImages() {
     const imageAnalysisEnabled = settings.imageAnalysis !== false;
-    
+
     if (!imageAnalysisEnabled) {
       console.log('[ImageScanner] Image analysis disabled in settings');
       return;
@@ -1511,11 +1555,11 @@
   function init() {
     // Floating badge disabled - use popup instead
     // createFloatingBadge();
-    
+
     // Run analysis after short delay to let page settle
     setTimeout(async () => {
       await analyzePageWithSegments();
-      
+
       // Run image analysis after text analysis
       setTimeout(() => {
         analyzePageImages();
