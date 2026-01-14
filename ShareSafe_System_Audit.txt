@@ -1,0 +1,458 @@
+# ShareSafe AI Text Detection System - Comprehensive Audit
+
+================================================================================
+                              DETECTION FLOWCHART
+================================================================================
+
+                    +----------------------------------+
+                    |       USER OPENS WEB PAGE        |
+                    +----------------------------------+
+                                    |
+                                    v
+                    +----------------------------------+
+                    |   Content Script Loads           |
+                    |   (contentNew.js)                |
+                    +----------------------------------+
+                                    |
+                                    v
+                    +----------------------------------+
+                    |   Platform Detection             |
+                    |   Twitter? Wikipedia? Generic?   |
+                    +----------------------------------+
+                                    |
+                                    v
+            +-----------------------------------------------+
+            |              SEGMENT EXTRACTION               |
+            |  - Find paragraphs, headings, lists           |
+            |  - Skip navigation/footer/sidebar             |
+            |  - Calculate word count per segment           |
+            +-----------------------------------------------+
+                                    |
+                                    v
+                    +----------------------------------+
+                    |   For Each Segment:              |
+                    +----------------------------------+
+                                    |
+                    +---------------+---------------+
+                    |                               |
+                    v                               v
+    +---------------------------+     +---------------------------+
+    |   STATISTICAL ANALYSIS    |     |   PATTERN DETECTION       |
+    |   (statisticalAnalyzer)   |     |   (segmentAnalyzer)       |
+    |                           |     |                           |
+    |   - Sentence variance     |     |   - AI phrases            |
+    |   - Token entropy         |     |   - Markdown artifacts    |
+    |   - N-gram repetition     |     |   - Terminal emojis       |
+    |   - Lexical diversity     |     |   - Self-disclosure       |
+    |   - Transition density    |     |   - Template phrases      |
+    +---------------------------+     +---------------------------+
+                    |                               |
+                    +---------------+---------------+
+                                    |
+                                    v
+                    +----------------------------------+
+                    |   SCORE COMBINATION              |
+                    |                                  |
+                    |   Short Text (<50 words):        |
+                    |     40% stats + 60% patterns     |
+                    |                                  |
+                    |   Long Text (50+ words):         |
+                    |     75% stats + 25% patterns     |
+                    +----------------------------------+
+                                    |
+                                    v
+                    +----------------------------------+
+                    |   Score in Uncertain Zone?       |
+                    |   (35-65 range)                  |
+                    +----------------------------------+
+                           |                |
+                          YES               NO
+                           |                |
+                           v                v
+            +---------------------------+   |
+            |   LLM TIE-BREAKER         |   |
+            |   (Gemini API)            |   |
+            |                           |   |
+            |   Blend: 60% stat + 40%   |   |
+            |   LLM result              |   |
+            +---------------------------+   |
+                           |                |
+                           +-------+--------+
+                                   |
+                                   v
+                    +----------------------------------+
+                    |   CONFIDENCE CALCULATION         |
+                    |                                  |
+                    |   Based on:                      |
+                    |   - Feature agreement            |
+                    |   - Word count                   |
+                    |   - Signal strength              |
+                    +----------------------------------+
+                                    |
+                                    v
+                    +----------------------------------+
+                    |   RISK LEVEL ASSIGNMENT          |
+                    |                                  |
+                    |   Score >= 60: HIGH RISK         |
+                    |   Score 35-59: MEDIUM RISK       |
+                    |   Score < 35: LOW RISK           |
+                    +----------------------------------+
+                                    |
+                                    v
+            +-----------------------------------------------+
+            |              PAGE AGGREGATION                 |
+            |                                               |
+            |   Weighted average of all segment scores      |
+            |   Weight = (wordCount/100) x (confidence/100) |
+            |   Longer + higher confidence = more influence |
+            +-----------------------------------------------+
+                                    |
+                                    v
+                    +----------------------------------+
+                    |   VISUAL OUTPUT                  |
+                    |                                  |
+                    |   - Highlight flagged segments   |
+                    |   - Show summary panel           |
+                    |   - Display reasons              |
+                    +----------------------------------+
+
+
+================================================================================
+                    DETAILED EXPLANATION OF EACH STEP
+================================================================================
+
+STEP 1: PAGE LOAD & INITIALIZATION
+----------------------------------
+When a user opens any webpage, the content script (contentNew.js) automatically 
+loads. It first checks if the extension is enabled and if the domain is 
+allowed. Then it detects the platform type (Twitter, Wikipedia, generic, etc.) 
+to apply appropriate detection strategies.
+
+
+STEP 2: SEGMENT EXTRACTION
+--------------------------
+The system doesn't analyze the entire page as one block. Instead, it breaks 
+the content into logical segments:
+
+  - Paragraphs (<p> elements)
+  - Headings with their following content (<h1>-<h6>)
+  - List items (<li>)
+  - Blockquotes
+  - Content divs
+
+Navigation, headers, footers, and sidebars are skipped. Each segment is 
+assigned an ID and its word count is calculated.
+
+WHY THIS MATTERS: A page might have human-written intro with AI-generated 
+body. Segment-level analysis can detect this mixed content.
+
+
+STEP 3: STATISTICAL ANALYSIS
+----------------------------
+For each segment, statistical features are calculated:
+
+  1. SENTENCE METRICS
+     - Mean sentence length (AI tends to be consistent ~18-22 words)
+     - Sentence length variance (AI has low variance)
+     - Burstiness (human writing has irregular rhythm)
+
+  2. VOCABULARY METRICS
+     - Token entropy (AI has more predictable word choices)
+     - Lexical diversity (AI may repeat vocabulary)
+     - Stopword ratio (function word patterns)
+
+  3. STYLE METRICS
+     - Transition density ("moreover", "furthermore" overuse)
+     - Filler phrase ratio ("it is important to note")
+     - POS regularity (grammar pattern consistency)
+
+Each feature is normalized using Z-score against human baseline values.
+Features are weighted, and weights are REDUCED for short text where 
+statistics are unreliable.
+
+
+STEP 4: PATTERN DETECTION
+-------------------------
+Fast regex-based checks for known AI fingerprints:
+
+  HIGH CERTAINTY PATTERNS (Strong signals):
+  - "As an AI language model..."
+  - "I don't have personal opinions..."
+  - Markdown formatting in casual text (### headers, **bold**)
+  - Terminal emoji placement (emoji at sentence end only)
+  - "It is important to note that..."
+
+  MEDIUM CERTAINTY PATTERNS:
+  - "In conclusion", "To summarize"
+  - Corporate jargon ("leverage", "optimize", "holistic")
+  - Rhetorical questions with marketing tone
+  - Excessive formal connectors
+
+If a HIGH CERTAINTY pattern is detected, it can override statistical scores
+(called "Red Flag Override").
+
+
+STEP 5: SCORE COMBINATION
+-------------------------
+Statistical and pattern scores are combined differently based on text length:
+
+  FOR SHORT TEXT (<50 words):
+    Final Score = (stat_score x 0.4) + (pattern_score x 0.6)
+    
+    Reasoning: Statistics are unreliable on short text, so patterns 
+    (like AI phrases, emojis) are weighted more heavily.
+
+  FOR LONG TEXT (50+ words):
+    Final Score = (stat_score x 0.75) + (pattern_score x 0.25)
+    
+    Reasoning: Statistics become reliable with more data, so they 
+    dominate the score.
+
+  RED FLAG OVERRIDE:
+    If definitive AI patterns detected, score is forced to minimum 85
+    regardless of statistical results.
+
+
+STEP 6: LLM TIE-BREAKER (OPTIONAL)
+----------------------------------
+The system can optionally use Google Gemini as a tie-breaker, but ONLY when:
+
+  - User has enabled LLM mode in settings
+  - Score is in "uncertain zone" (35-65)
+  - Text has at least 20 words
+
+LLM is NEVER called when:
+  - Score < 35 (clearly human-like)
+  - Score > 65 (clearly AI-like)
+  - Text is too short
+
+When used, the final score blends 60% statistical + 40% LLM judgment.
+This prevents LLM from overriding strong statistical evidence.
+
+
+STEP 7: CONFIDENCE CALCULATION
+------------------------------
+Confidence (0-100) indicates how reliable the score is:
+
+  HIGH CONFIDENCE when:
+  - Multiple features agree
+  - Text is long (100+ words)
+  - Strong patterns detected
+
+  LOW CONFIDENCE when:
+  - Features disagree
+  - Text is short
+  - No strong patterns
+  - Score is in uncertain zone
+
+Confidence is capped at 40% for very short text (<50 words) to prevent
+overconfident predictions on insufficient data.
+
+
+STEP 8: RISK LEVEL ASSIGNMENT
+-----------------------------
+Each segment is bucketed into risk levels:
+
+  HIGH RISK:    Score >= 60 (55 for short text with adaptive threshold)
+  MEDIUM RISK:  Score 35-59
+  LOW RISK:     Score < 35
+
+Segments marked as MEDIUM or HIGH risk are flagged for user attention.
+
+
+STEP 9: PAGE AGGREGATION
+------------------------
+All segment scores are combined into a page-level score using weighted average:
+
+  Weight = (segment_word_count / 100) x (segment_confidence / 100)
+
+This means:
+  - Longer segments have more influence
+  - Higher confidence segments have more influence
+  - A short low-confidence AI segment won't dominate the page score
+
+The page is then assigned an overall risk level based on:
+  - Number of high-risk segments
+  - Number of medium-risk segments
+  - Weighted average score
+
+
+STEP 10: VISUAL OUTPUT
+----------------------
+The user sees:
+
+  1. SUMMARY PANEL (top-right corner):
+     - Count of HIGH / MEDIUM / LOW risk segments
+     - Total segments analyzed
+     - "Hide Highlights" button
+
+  2. SEGMENT HIGHLIGHTS:
+     - Colored border around flagged text
+     - Badge showing score percentage
+     - Click for detailed tooltip with reasons
+
+  3. TOOLTIP DETAILS:
+     - Score and confidence
+     - Top 5 reasons why AI was suspected
+     - Whether LLM was used
+
+
+================================================================================
+                        HOW THE DETECTION ACTUALLY WORKS
+================================================================================
+
+THE CORE IDEA:
+--------------
+AI-generated text has measurable stylistic patterns that differ from natural
+human writing. The system detects these patterns through:
+
+  1. STATISTICAL FINGERPRINTS
+     AI tends to write with consistent sentence lengths, predictable vocabulary,
+     and regular grammatical structures. Humans are more chaotic.
+
+  2. PHRASE FINGERPRINTS
+     AI uses certain phrases frequently: "It is important to note", 
+     "In conclusion", "Let's dive in". These are rare in organic human writing.
+
+  3. FORMATTING FINGERPRINTS
+     Copy-pasted AI text often contains markdown (### headers, **bold**),
+     numbered lists, or terminal emojis that look unnatural in casual context.
+
+
+THE DETECTION FORMULA (simplified):
+-----------------------------------
+
+  IF text_length < 50 words:
+      ai_score = (0.4 * statistical_score) + (0.6 * pattern_score)
+      IF definitive_pattern_found:
+          ai_score = max(ai_score, 85)
+      confidence = min(calculated_confidence, 40)  # Capped for short text
+  
+  ELSE:
+      ai_score = (0.75 * statistical_score) + (0.25 * pattern_score)
+      confidence = calculated_confidence
+  
+  IF ai_score >= 60:
+      risk_level = "HIGH"
+  ELIF ai_score >= 35:
+      risk_level = "MEDIUM"
+  ELSE:
+      risk_level = "LOW"
+
+
+WHY PARTIAL DETECTION IS HONEST:
+--------------------------------
+Unlike binary "AI or Human" classifiers, this system:
+
+  - Scores each segment independently (0-100)
+  - Shows WHERE in the document AI is suspected
+  - Explains WHY with specific reasons
+  - Admits uncertainty with confidence scores
+  - Never says "definitively AI" - always "suspected" or "likely"
+
+This is safer because:
+  - Human-edited AI text is correctly shown as "mixed"
+  - Formal human writing (Wikipedia) may flag but with low confidence
+  - Users can make informed decisions with the evidence provided
+
+
+================================================================================
+
+
+## 1. Existing Detection Factors
+
+### Statistical Features (statisticalAnalyzer.js)
+
+| Factor | What It Measures | Why It Signals AI | Strength |
+|--------|------------------|-------------------|----------|
+| Sentence Length Mean | Average words per sentence | AI tends toward consistent ~18-22 word sentences | Weak |
+| Sentence Length Variance | Variation in sentence length | AI produces uniform sentence structures | Medium |
+| Token Entropy | Shannon entropy of word distribution | Low entropy = predictable/templated vocabulary | Medium |
+| N-gram Repetition | Repeated 3-word phrases | AI reuses phrase patterns more than humans | Medium |
+| Readability Grade | Flesch-Kincaid complexity | AI often optimizes for "readable" grade 8-12 | Weak |
+| POS Regularity | Part-of-speech pattern consistency | AI has more regular grammatical patterns | Medium |
+| Lexical Diversity (TTR) | Unique words / total words | Low diversity = limited vocabulary variation | Medium |
+| Burstiness | Consecutive sentence length changes | Humans have irregular "bursts"; AI is smooth | Weak |
+| Stopword Ratio | Function words per total words | AI often has consistent function word usage | Weak |
+| Transition Density | "moreover", "however" per sentence | AI overuses formal connectors | Strong |
+| Filler Ratio | "It is important to note" etc. | Direct AI phrase fingerprinting | Strong |
+| Emoji Placement | Terminal vs. mid-sentence emojis | AI puts emojis at sentence end only | Strong |
+| Copy-Paste Artifacts | ###, **bold**, numbered lists | Ghost markdown from LLM copy-paste | Strong |
+
+### Pattern-Based Heuristics (segmentAnalyzer.js)
+
+| Factor | What It Detects | Strength |
+|--------|-----------------|----------|
+| Explicit AI Mentions | "As an AI", "ChatGPT wrote this" | Definitive |
+| AI Self-Identification | "I don't have personal opinions" | Definitive |
+| Template Phrases | "It's worth noting", "In conclusion" | Strong |
+| Excessive Formal Connectors | 3+ uses of "moreover/furthermore" | Medium |
+| Corporate Jargon | "comprehensive", "holistic", "robust" | Medium |
+| Hedging Language | "can be seen as", "might be" | Medium |
+| Citation-less Claims | "Studies show..." without source | Medium |
+| Terminal Emoji Pattern | Emoji at exact sentence end | Strong |
+| Markdown Artifacts | Bold/headers in casual text | Strong |
+| Numbered Lists | "1. Plan 2. Execute" in short text | Medium |
+
+
+## 2. Performance by Text Length
+
+| Content Type | Expected Accuracy | Strengths | Weaknesses |
+|--------------|-------------------|-----------|------------|
+| Long articles (500+ words) | 70-80% | Stats stabilize; N-grams emerge | May miss edited AI; flags journalism |
+| Medium blogs (150-500 words) | 60-75% | Good balance of stats + patterns | Wikipedia-style triggers FPs |
+| Short text (<50 words) | 50-65% | Red flags effective | Stats unreliable; confidence capped |
+| Social media posts | 45-60% | Copy-paste artifacts visible | Very short; hashtags confuse stats |
+
+
+## 3. Known Limitations
+
+1. SHORT TEXT UNCERTAINTY
+   Problem: Stats need ~100+ words to stabilize.
+   Why Hard: 15-word tweet has 1-2 sentences - not enough data.
+
+2. WIKIPEDIA / ENCYCLOPEDIC WRITING
+   Problem: Encyclopedic writing triggers AI signals.
+   Why Hard: AI was literally trained on Wikipedia - they share the same style.
+
+3. EDITED / PARAPHRASED AI TEXT
+   Problem: Light editing breaks phrase fingerprints.
+   Why Hard: Changing "It is" to "It's" defeats detection while keeping AI ideas.
+
+4. NON-NATIVE ENGLISH BIAS
+   Problem: ESL writers may use simpler, consistent structures.
+   Why Hard: System compares against "native human writing" baselines.
+
+5. ADVERSARIAL HUMANIZATION
+   Problem: Users can add typos, contractions, questions.
+   Why Hard: Every signal is learnable and counterable.
+
+
+## 4. Final Verdict
+
+### Is this system reliable?
+
+YES, with caveats:
+- RELIABLE for flagging potential AI influence
+- Segment-level is fairer than page-level
+- Explainable reasons build trust
+- NOT reliable for short text (<50 words)
+- WILL flag Wikipedia/formal writing
+- Should NOT be used for academic integrity alone
+
+### Best Suited For
+
+| User Type | Fit |
+|-----------|-----|
+| Journalists verifying sources | Excellent |
+| Content moderators | Good (with human review) |
+| Curious readers | Good |
+| Academic integrity officers | Insufficient alone |
+| Legal evidence | Not appropriate |
+
+### User Communication
+
+"This tool identifies patterns commonly associated with AI-generated text. 
+It does not prove authorship. A high score means 'worth reviewing,' not 
+'definitely AI.' False positives occur on formal, encyclopedic, or edited 
+content. Use as one signal among many."
