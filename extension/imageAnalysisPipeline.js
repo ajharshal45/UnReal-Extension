@@ -11,15 +11,16 @@
 
 // Layer weights - ADJUSTED for better accuracy
 const WEIGHTS = {
-  layer1: 0.50,  // Forensic (increased - most reliable for web images)
-  layer2: 0.35,  // Mathematical (decreased - affected by compression)
+  layer1: 0.30,  // Forensic
+  layer2: 0.25,  // Mathematical
+  layer3: 0.30,  // Local ML (Swin Transformer)
   layer4: 0.15   // Gemini (tie-breaker)
 };
 
-// Risk level thresholds - ADJUSTED
+// Risk level thresholds - ADJUSTED for fewer false positives
 const RISK_THRESHOLDS = {
-  low: 35,      // Below this = likely real
-  high: 60      // Above this = likely AI
+  low: 40,      // Below this = likely real
+  high: 75      // Above this = likely AI
 };
 
 // Minimum confidence to trust a layer's result
@@ -30,6 +31,7 @@ export class ImageAnalysisPipeline {
     this.layer0 = null;
     this.layer1 = null;
     this.layer2 = null;
+    this.layer3 = null;
     this.layer4 = null;
 
     this.layer3Available = false;
@@ -67,6 +69,20 @@ export class ImageAnalysisPipeline {
         await this.layer2.initialize();
         await this.layer4.initialize();
 
+        // Try to load Layer 3 (Local ML)
+        try {
+          console.log('[Pipeline] Loading Layer 3 (Local ML)...');
+          const layer3Module = await import(chrome.runtime.getURL('layer3-local-ml.js'));
+          this.layer3 = new layer3Module.LocalMLAnalyzer();
+          const mlReady = await this.layer3.initialize();
+          this.layer3Available = mlReady;
+          console.log('[Pipeline] Layer 3 available:', mlReady);
+        } catch (error) {
+          console.warn('[Pipeline] Layer 3 not available:', error.message);
+          this.layer3 = null;
+          this.layer3Available = false;
+        }
+
         this.initialized = true;
         console.log('[Pipeline] All layers loaded successfully');
 
@@ -102,6 +118,7 @@ export class ImageAnalysisPipeline {
       layer0: {},
       layer1: {},
       layer2: {},
+      layer3: {},
       layer4: {}
     };
 
@@ -168,23 +185,52 @@ export class ImageAnalysisPipeline {
         results.layer2 = { score: 0, frequencyStats: {}, noiseStats: {}, artifacts: [], processingTime: 0 };
       }
 
+      // ========== LAYER 3: Local ML (Swin Transformer) ==========
+      let layer3Result = { score: 0, confidence: 0, available: false, artifacts: [], processingTime: 0 };
+      if (this.layer3Available && this.layer3) {
+        try {
+          console.log('[Pipeline] Running Layer 3 (Local ML)...');
+          layer3Result = await this.layer3.analyze(imageElement);
+          results.layer3 = layer3Result;
+          diagnostics.layer3 = {
+            score: layer3Result.score,
+            confidence: layer3Result.confidence,
+            realScore: layer3Result.realScore,
+            fakeScore: layer3Result.fakeScore,
+            available: layer3Result.available
+          };
+          console.log(`[Pipeline] Layer 3 (Local ML): ${layer3Result.score}%`, diagnostics.layer3);
+
+          (layer3Result.artifacts || []).forEach(artifact => {
+            allArtifacts.push({ ...artifact, layer: 'local-ml' });
+          });
+        } catch (error) {
+          console.warn('[Pipeline] Layer 3 error:', error.message);
+          results.layer3 = { score: 0, confidence: 0, available: false, artifacts: [], processingTime: 0, error: error.message };
+        }
+      } else {
+        console.log('[Pipeline] Layer 3: Not available (model not loaded)');
+        results.layer3 = { score: 0, confidence: 0, available: false, note: 'Model not loaded', artifacts: [], processingTime: 0 };
+      }
+
       // ========== Calculate Preliminary Score ==========
-      const preliminaryScore = this._calculatePreliminaryScore(results.layer0, results.layer1, results.layer2);
-      
+      const preliminaryScore = this._calculatePreliminaryScore(results.layer0, results.layer1, results.layer2, layer3Result);
+
       console.log('[Pipeline] ───────────────────────────────────────────');
       console.log(`[Pipeline] Preliminary score: ${preliminaryScore}%`);
       console.log('[Pipeline]   Layer 0 bonus: +' + (results.layer0?.score || 0));
-      console.log('[Pipeline]   Layer 1 (50%): ' + (results.layer1?.score || 0) + ' → ' + Math.round((results.layer1?.score || 0) * 0.50));
-      console.log('[Pipeline]   Layer 2 (35%): ' + (results.layer2?.score || 0) + ' → ' + Math.round((results.layer2?.score || 0) * 0.35));
+      console.log('[Pipeline]   Layer 1 (30%): ' + (results.layer1?.score || 0) + ' → ' + Math.round((results.layer1?.score || 0) * 0.30));
+      console.log('[Pipeline]   Layer 2 (25%): ' + (results.layer2?.score || 0) + ' → ' + Math.round((results.layer2?.score || 0) * 0.25));
+      console.log('[Pipeline]   Layer 3 (30%): ' + (layer3Result?.score || 0) + ' → ' + Math.round((layer3Result?.score || 0) * 0.30) + (layer3Result?.available ? '' : ' (unavailable)'));
 
       // ========== LAYER 4: Gemini (if uncertain) ==========
       const shouldUseGemini = this.layer4.shouldRun(preliminaryScore);
-      
+
       if (shouldUseGemini) {
         console.log('[Pipeline] Layer 4: Triggered (uncertain range 40-80%)');
         try {
           results.layer4 = await this.layer4.validate(imageElement, preliminaryScore, allArtifacts);
-          
+
           if (results.layer4 && !results.layer4.skipped) {
             diagnostics.layer4 = {
               confidence: results.layer4.confidence,
@@ -221,6 +267,7 @@ export class ImageAnalysisPipeline {
         layer0: results.layer0.processingTime || 0,
         layer1: results.layer1.processingTime || 0,
         layer2: results.layer2.processingTime || 0,
+        layer3: results.layer3?.processingTime || 0,
         layer4: results.layer4?.processingTime || 0
       };
       finalResult.diagnostics = diagnostics;
@@ -240,31 +287,49 @@ export class ImageAnalysisPipeline {
     }
   }
 
-  _calculatePreliminaryScore(layer0, layer1, layer2) {
+  _calculatePreliminaryScore(layer0, layer1, layer2, layer3Result) {
     // Layer 0 bonus (0-30 points) - only if strong signals
     const bonus = (layer0?.score >= 10) ? layer0.score : 0;
 
     // Get individual scores
     const layer1Score = layer1?.score || 0;
     const layer2Score = layer2?.score || 0;
+    const layer3Score = layer3Result?.score || 0;
+    const layer3Available = layer3Result?.available || false;
 
     // Apply weights
-    const weightedLayer1 = layer1Score * WEIGHTS.layer1;
-    const weightedLayer2 = layer2Score * WEIGHTS.layer2;
+    let weightedSum = 0;
+    let totalWeight = 0;
 
-    // Calculate base score
-    let baseScore = weightedLayer1 + weightedLayer2;
+    // Layer 1 (Forensic)
+    weightedSum += layer1Score * WEIGHTS.layer1;
+    totalWeight += WEIGHTS.layer1;
 
-    // Normalize to account for missing layer3 (15% weight)
-    // Redistribute: layer1 gets 50/(50+35) = 58.8%, layer2 gets 41.2%
-    const normalizedScore = baseScore / (WEIGHTS.layer1 + WEIGHTS.layer2) * 0.85;
+    // Layer 2 (Mathematical)
+    weightedSum += layer2Score * WEIGHTS.layer2;
+    totalWeight += WEIGHTS.layer2;
+
+    // Layer 3 (Local ML) - only if available
+    if (layer3Available && layer3Score > 0) {
+      weightedSum += layer3Score * WEIGHTS.layer3;
+      totalWeight += WEIGHTS.layer3;
+    }
+
+    // Normalize score (excluding layer4 which is applied later)
+    const maxPossibleWeight = WEIGHTS.layer1 + WEIGHTS.layer2 + (layer3Available ? WEIGHTS.layer3 : 0);
+    const normalizedScore = totalWeight > 0 ? (weightedSum / totalWeight) * (maxPossibleWeight / 0.85) : 0;
 
     // Add metadata bonus
     const totalScore = normalizedScore + bonus;
 
     // Apply confidence adjustment
     // If layers strongly agree, boost confidence
-    const agreement = 1 - Math.abs(layer1Score - layer2Score) / 100;
+    const scores = [layer1Score, layer2Score];
+    if (layer3Available) scores.push(layer3Score);
+    const avgScore = scores.reduce((a, b) => a + b, 0) / scores.length;
+    const variance = scores.reduce((sum, s) => sum + Math.pow(s - avgScore, 2), 0) / scores.length;
+    const agreement = 1 - Math.min(1, Math.sqrt(variance) / 50);
+
     const adjustedScore = totalScore * (0.8 + agreement * 0.2);
 
     return Math.min(100, Math.max(0, Math.round(adjustedScore)));
@@ -272,26 +337,79 @@ export class ImageAnalysisPipeline {
 
   _calculateFinalResult(layers, preliminaryScore, allArtifacts, diagnostics) {
     let finalScore = preliminaryScore;
+    let logicTrail = [];
 
-    // If Gemini ran and provided useful input
-    if (layers.layer4 && !layers.layer4.skipped && layers.layer4.confidence > 0) {
-      // Weight Gemini's input based on how uncertain we were
-      const uncertainty = 1 - Math.abs(preliminaryScore - 50) / 50; // 1 = very uncertain, 0 = very certain
-      const geminiWeight = uncertainty * 0.4; // Up to 40% influence when very uncertain
-      
-      finalScore = Math.round(
-        (preliminaryScore * (1 - geminiWeight)) +
-        (layers.layer4.confidence * geminiWeight)
-      );
-      
-      console.log(`[Pipeline] Gemini adjustment: uncertainty=${(uncertainty*100).toFixed(0)}%, weight=${(geminiWeight*100).toFixed(0)}%`);
+    // Get Layer 3 (ML) score for disagreement detection
+    const mlScore = layers.layer3?.score || 0;
+    const mlAvailable = layers.layer3?.available || false;
+
+    // Step 1: Dampen weak ML scores to reduce false positives from compression noise
+    if (mlAvailable && mlScore > 0 && mlScore < 75) {
+      // Weak ML signal - dampen its contribution to preliminary score
+      const dampeningFactor = mlScore / 100; // 50% score = 0.5 factor
+      const mlContribution = mlScore * 0.30; // What ML added to preliminary
+      const dampenedContribution = mlContribution * dampeningFactor;
+      const reduction = mlContribution - dampenedContribution;
+      finalScore = Math.max(0, finalScore - reduction);
+      logicTrail.push(`ML dampened (-${Math.round(reduction)}pts, weak ${mlScore}% signal)`);
+      console.log(`[Pipeline] ML dampening: score ${mlScore}% is weak, reducing contribution by ${Math.round(reduction)}pts`);
     }
 
-    // Apply artifact boost - more artifacts = higher confidence
-    const significantArtifacts = allArtifacts.filter(a => a.confidence >= 60);
-    if (significantArtifacts.length >= 3) {
-      const boost = Math.min(15, significantArtifacts.length * 3);
+    // Step 2: Apply Gemini's verdict with veto power
+    if (layers.layer4 && !layers.layer4.skipped && layers.layer4.confidence > 0) {
+      const geminiConfidence = layers.layer4.confidence;
+      const geminiSaysAI = layers.layer4.isAIGenerated;
+
+      // Check for ML/Gemini disagreement
+      const mlSaysAI = mlScore >= 60;
+      const disagreement = mlAvailable && (mlSaysAI !== geminiSaysAI);
+
+      if (geminiConfidence >= 80) {
+        // HIGH CONFIDENCE GEMINI - Apply strong influence
+
+        if (geminiSaysAI) {
+          // Gemini says AI with high confidence - BOOST score
+          const boost = Math.round((geminiConfidence - 50) * 0.6);
+          finalScore = Math.min(100, finalScore + boost);
+          logicTrail.push(`Gemini boost (+${boost}pts, AI@${geminiConfidence}%)`);
+          console.log(`[Pipeline] Gemini BOOST: +${boost}pts (says AI with ${geminiConfidence}% confidence)`);
+
+        } else {
+          // Gemini says REAL with high confidence - VETO (strong penalty)
+          const penalty = Math.round(geminiConfidence * 0.5);
+          const preVetoScore = finalScore;
+          finalScore = Math.max(5, finalScore - penalty);
+
+          // If ML strongly disagreed, note it but still apply veto
+          if (disagreement && mlScore >= 70) {
+            logicTrail.push(`Gemini VETO (-${penalty}pts, Real@${geminiConfidence}%) [ML disagreed: ${mlScore}%]`);
+            console.log(`[Pipeline] Gemini VETO (with ML disagreement): ${preVetoScore}% → ${finalScore}% (ML said ${mlScore}%)`);
+          } else {
+            logicTrail.push(`Gemini VETO (-${penalty}pts, Real@${geminiConfidence}%)`);
+            console.log(`[Pipeline] Gemini VETO: ${preVetoScore}% → ${finalScore}% (says Real with ${geminiConfidence}% confidence)`);
+          }
+        }
+
+      } else {
+        // MEDIUM CONFIDENCE GEMINI - Apply moderate influence
+        const weight = 0.35;
+        const targetScore = geminiSaysAI ?
+          Math.max(65, geminiConfidence) :
+          Math.min(40, 100 - geminiConfidence);
+
+        const oldScore = finalScore;
+        finalScore = Math.round(finalScore * (1 - weight) + targetScore * weight);
+        logicTrail.push(`Gemini adjust (${geminiSaysAI ? 'AI' : 'Real'}@${geminiConfidence}%, ${oldScore}→${finalScore})`);
+        console.log(`[Pipeline] Gemini adjustment: ${oldScore}% → ${finalScore}% (${geminiSaysAI ? 'AI' : 'Real'} at ${geminiConfidence}%)`);
+      }
+    }
+
+    // Step 3: Apply artifact boost - only for very strong signals
+    const significantArtifacts = allArtifacts.filter(a => a.confidence >= 80);
+    if (significantArtifacts.length >= 6) {
+      const boost = Math.min(6, significantArtifacts.length);
       finalScore = Math.min(100, finalScore + boost);
+      logicTrail.push(`Artifact boost (+${boost}pts)`);
       console.log(`[Pipeline] Artifact boost: +${boost} (${significantArtifacts.length} high-confidence artifacts)`);
     }
 
@@ -299,12 +417,15 @@ export class ImageAnalysisPipeline {
     finalScore = Math.max(0, Math.min(100, finalScore));
 
     const riskLevel = this._determineRiskLevel(finalScore);
-    const reasoning = this._generateReasoning(layers, finalScore, riskLevel, diagnostics);
+
+    // Add logic trail to reasoning
+    const baseReasoning = this._generateReasoning(layers, finalScore, riskLevel, diagnostics);
+    const reasoning = baseReasoning + (logicTrail.length > 0 ? ` [Logic: ${logicTrail.join(' → ')}]` : '');
 
     return {
       finalScore: finalScore,
       riskLevel: riskLevel,
-      isAIGenerated: finalScore >= 50,
+      isAIGenerated: finalScore >= 65,
       allArtifacts: allArtifacts,
       reasoning: reasoning,
       layers: {
@@ -327,8 +448,14 @@ export class ImageAnalysisPipeline {
           processingTime: layers.layer2?.processingTime || 0
         },
         layer3: {
-          available: false,
-          note: 'CNN layer not yet implemented'
+          score: layers.layer3?.score || 0,
+          confidence: layers.layer3?.confidence || 0,
+          realScore: layers.layer3?.realScore || 0,
+          fakeScore: layers.layer3?.fakeScore || 0,
+          available: layers.layer3?.available || false,
+          artifacts: layers.layer3?.artifacts || [],
+          processingTime: layers.layer3?.processingTime || 0,
+          error: layers.layer3?.error || null
         },
         layer4: {
           confidence: layers.layer4?.confidence || 0,
@@ -384,8 +511,15 @@ export class ImageAnalysisPipeline {
     if (diagnostics.layer2?.diffusionSignature) findings.push('diffusion model signature');
     if (diagnostics.layer2?.prnuAbsent) findings.push('missing camera fingerprint');
 
+    // Layer 3 findings (ML)
+    if (diagnostics.layer3?.available && diagnostics.layer3?.score > 70) {
+      findings.push('neural network detected AI patterns');
+    } else if (diagnostics.layer3?.available && diagnostics.layer3?.score < 30) {
+      findings.push('neural network indicates authentic image');
+    }
+
     if (findings.length > 0) {
-      parts.push(`Key signals: ${findings.slice(0, 3).join(', ')}.`);
+      parts.push(`Key signals: ${findings.slice(0, 4).join(', ')}.`);
     }
 
     // Gemini finding if available
@@ -408,7 +542,7 @@ export class ImageAnalysisPipeline {
         layer0: { score: 0, signals: [], processingTime: 0 },
         layer1: { score: 0, issues: [], details: {}, processingTime: 0 },
         layer2: { score: 0, frequencyStats: {}, noiseStats: {}, artifacts: [], processingTime: 0 },
-        layer3: { available: false, note: 'CNN layer not yet implemented' },
+        layer3: { score: 0, confidence: 0, available: false, artifacts: [], processingTime: 0 },
         layer4: { confidence: 0, skipped: true, artifacts: [], processingTime: 0 }
       },
       processingTime: {
@@ -416,6 +550,7 @@ export class ImageAnalysisPipeline {
         layer0: 0,
         layer1: 0,
         layer2: 0,
+        layer3: 0,
         layer4: 0
       }
     };
@@ -424,6 +559,9 @@ export class ImageAnalysisPipeline {
   terminate() {
     if (this.layer2) {
       this.layer2.terminate();
+    }
+    if (this.layer3) {
+      this.layer3.dispose();
     }
     console.log('[Pipeline] Terminated');
   }

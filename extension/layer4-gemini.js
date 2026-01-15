@@ -21,9 +21,9 @@ export class GeminiValidator {
       const credentials = await chrome.runtime.sendMessage({
         type: 'GET_API_CREDENTIALS'
       });
-      
+
       this.apiKey = credentials?.geminiApiKey || null;
-      
+
       if (!this.apiKey) {
         console.log('[Layer4-Gemini] No API key available - validation will be skipped');
       } else {
@@ -66,7 +66,7 @@ export class GeminiValidator {
     try {
       // Convert image to base64
       const base64Image = await this._imageToBase64(imageElement);
-      
+
       // Build enhanced prompt
       const prompt = this._buildEnhancedPrompt(previousArtifacts);
 
@@ -80,9 +80,15 @@ export class GeminiValidator {
         }
       });
 
-      if (!response || !response.success) {
-        console.error('[Layer4-Gemini] API call failed:', response?.error);
-        return this._errorResult(response?.error || 'API call failed');
+      if (!response) {
+        console.error('[Layer4-Gemini] No response from background script');
+        return this._errorResult('No response from background script');
+      }
+
+      if (!response.success) {
+        const errorMsg = response.error || response.data?.error?.message || 'Unknown API error';
+        console.error('[Layer4-Gemini] API call failed:', errorMsg, response);
+        return this._errorResult(errorMsg);
       }
 
       // Process response
@@ -102,42 +108,46 @@ export class GeminiValidator {
       ? previousArtifacts.slice(0, 10).map(a => `- [${a.type || a.layer}] ${a.description}`).join('\n')
       : '- No significant artifacts detected by automated analysis';
 
-    return `You are an expert AI image forensics validator. Your task is to provide semantic validation of automated detection results.
+    return `You are an expert AI image forensics validator. Your task is to determine if this image is AI-generated or a real photograph.
+
+CRITICAL WARNING - DO NOT RELY ON THESE ALONE:
+- Hands and fingers - Modern AI (2024+) generates perfect hands
+- Eyes and pupils - Modern AI generates realistic eyes
+- Anatomical proportions - AI has largely fixed these issues
+These are NO LONGER reliable indicators of AI generation!
 
 AUTOMATED FINDINGS FROM EARLIER ANALYSIS:
 ${artifactSummary}
 
-YOUR VALIDATION TASKS:
+YOUR VALIDATION TASKS - Focus on these RELIABLE indicators:
 
-1. VERIFY the automated findings listed above - confirm or refute each one
+1. TEXTURE REALISM (Most Important):
+   - Skin texture: Are there real pores, fine wrinkles, natural imperfections?
+   - Fabric/material: Does clothing have realistic weave, threads, texture variation?
+   - Hair: Individual strands, natural flyaways, or AI's typical smooth hair masses?
+   - Surfaces: Real photos have dust, scratches, imperfections - AI is too clean
 
-2. CHECK FOR SEMANTIC ISSUES that automated analysis cannot detect:
+2. PHYSICS & LIGHTING LOGIC:
+   - Light source consistency: Do shadows match light direction?
+   - Reflection accuracy: Do mirrors/water/eyes reflect correctly?
+   - Depth of field: Is bokeh natural or artificially perfect?
+   - Material properties: Does metal look metallic? Does glass refract?
 
-a) ANATOMICAL PROBLEMS:
-   - Hand/finger anomalies (wrong count, merged, impossible poses)
-   - Facial asymmetry or uncanny valley effects
-   - Body proportion issues
-   - Impossible joint positions
+3. BACKGROUND & CONTEXT LOGIC:
+   - Background coherence: Does the background make sense and connect logically?
+   - Edge transitions: Smooth, natural blending or AI's harsh/soft cutoffs?
+   - Object relationships: Do objects interact realistically with each other?
+   - Environmental consistency: Weather, time of day, location all match?
 
-b) TEXT AND SYMBOLS:
-   - Gibberish or distorted text on signs, clothing, books
-   - Malformed letters or numbers
-   - Nonsensical writing
-   - Distorted logos
+4. TEXT AND SYMBOLS:
+   - Any visible text: Is it readable and makes sense?
+   - Logos and signs: Properly rendered or distorted?
+   - Numbers: Correct format and legible?
 
-c) EYE ANOMALIES:
-   - Mismatched iris patterns
-   - Unusual or inconsistent reflections
-   - "Dead" or lifeless appearance
-   - Asymmetric pupils
-
-d) PHYSICS VIOLATIONS:
-   - Impossible shadows or reflections
-   - Objects defying gravity
-   - Inconsistent perspective
-   - Lighting that doesn't match
-
-3. PROVIDE CONFIDENCE and clear reasoning
+5. THE "TOO PERFECT" TEST:
+   - Real photos have noise, compression artifacts, slight blur
+   - AI often produces unnaturally clean, smooth, or perfect images
+   - Real lighting is complex; AI lighting is often flat or studio-perfect
 
 RESPOND IN THIS EXACT JSON FORMAT (NO MARKDOWN CODE BLOCKS):
 {
@@ -147,49 +157,85 @@ RESPOND IN THIS EXACT JSON FORMAT (NO MARKDOWN CODE BLOCKS):
   "refutedFindings": ["list of automated findings you disagree with"],
   "newFindings": [
     {
-      "category": "anatomy" | "text" | "eyes" | "physics" | "other",
+      "category": "texture" | "physics" | "background" | "text" | "too_perfect" | "other",
       "description": "specific issue found",
       "severity": "high" | "medium" | "low"
     }
   ],
-  "reasoning": "2-3 sentences explaining your overall conclusion"
+  "reasoning": "2-3 sentences explaining your overall conclusion based on TEXTURE and PHYSICS, not anatomy"
 }
 
-Be specific and technical in your analysis. If the image appears genuine, explain why the automated findings might be false positives.`;
+Remember: Modern AI generates perfect hands and eyes. Focus on TEXTURE, PHYSICS, and BACKGROUNDS to detect AI.`
   }
 
   /**
-   * Convert image element to base64
+   * Convert image element to base64 (with CORS bypass)
    */
   async _imageToBase64(imageElement) {
-    return new Promise((resolve, reject) => {
+    const maxSize = 1024;
+    let width = imageElement.naturalWidth || imageElement.width;
+    let height = imageElement.naturalHeight || imageElement.height;
+
+    if (width > maxSize || height > maxSize) {
+      const scale = Math.min(maxSize / width, maxSize / height);
+      width = Math.floor(width * scale);
+      height = Math.floor(height * scale);
+    }
+
+    // Try direct draw first
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(imageElement, 0, 0, width, height);
+      const base64 = canvas.toDataURL('image/jpeg', 0.85);
+      // Remove data URL prefix
+      return base64.replace(/^data:image\/(png|jpeg|jpg);base64,/, '');
+    } catch (corsError) {
+      // CORS error - try fetching via background script
+      console.log('[Layer4-Gemini] Direct canvas failed, trying background fetch...');
+
+      const imgSrc = imageElement.src || imageElement.currentSrc;
+      if (!imgSrc) {
+        throw new Error('No image source available');
+      }
+
       try {
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
+        const response = await chrome.runtime.sendMessage({
+          type: 'FETCH_IMAGE_FOR_ANALYSIS',
+          url: imgSrc
+        });
 
-        // Set canvas size (cap at 1024 for API limits)
-        const maxSize = 1024;
-        let width = imageElement.naturalWidth || imageElement.width;
-        let height = imageElement.naturalHeight || imageElement.height;
-
-        if (width > maxSize || height > maxSize) {
-          const scale = Math.min(maxSize / width, maxSize / height);
-          width = Math.floor(width * scale);
-          height = Math.floor(height * scale);
+        if (response && response.success && response.base64) {
+          // The background fetch returns a data URL, just extract the base64 part
+          console.log('[Layer4-Gemini] Successfully loaded via background fetch');
+          const base64Data = response.base64;
+          return base64Data.replace(/^data:image\/(png|jpeg|jpg|webp);base64,/, '');
+        } else {
+          throw new Error(response?.error || 'Background fetch failed');
         }
+      } catch (bgError) {
+        console.error('[Layer4-Gemini] Background fetch error:', bgError);
+        throw bgError;
+      }
+    }
+  }
 
-        canvas.width = width;
-        canvas.height = height;
+  /**
+   * Load base64 string as Image element
+   */
+  _loadBase64Image(base64) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('Failed to load base64 image'));
 
-        // Draw and convert
-        ctx.drawImage(imageElement, 0, 0, width, height);
-        const base64 = canvas.toDataURL('image/jpeg', 0.85);
-
-        // Remove data URL prefix
-        const base64Data = base64.replace(/^data:image\/(png|jpeg|jpg);base64,/, '');
-        resolve(base64Data);
-      } catch (error) {
-        reject(error);
+      // Handle both raw base64 and data URL formats
+      if (base64.startsWith('data:')) {
+        img.src = base64;
+      } else {
+        img.src = `data:image/jpeg;base64,${base64}`;
       }
     });
   }
@@ -200,9 +246,9 @@ Be specific and technical in your analysis. If the image appears genuine, explai
   _processGeminiResult(geminiData, processingTime) {
     try {
       // Extract text from Gemini response
-      if (!geminiData.candidates || !geminiData.candidates[0] || 
-          !geminiData.candidates[0].content || !geminiData.candidates[0].content.parts ||
-          !geminiData.candidates[0].content.parts[0]) {
+      if (!geminiData.candidates || !geminiData.candidates[0] ||
+        !geminiData.candidates[0].content || !geminiData.candidates[0].content.parts ||
+        !geminiData.candidates[0].content.parts[0]) {
         console.error('[Layer4-Gemini] Invalid response structure');
         return this._errorResult('Invalid response structure');
       }
@@ -275,8 +321,8 @@ Be specific and technical in your analysis. If the image appears genuine, explai
     const reason = !this.apiKey
       ? 'No API key available - Gemini validation skipped'
       : preliminaryScore < this.minScore
-      ? `Score ${preliminaryScore}% is below ${this.minScore}% threshold - high confidence in human origin`
-      : `Score ${preliminaryScore}% is above ${this.maxScore}% threshold - high confidence in AI generation`;
+        ? `Score ${preliminaryScore}% is below ${this.minScore}% threshold - high confidence in human origin`
+        : `Score ${preliminaryScore}% is above ${this.maxScore}% threshold - high confidence in AI generation`;
 
     console.log('[Layer4-Gemini] Skipped:', reason);
 

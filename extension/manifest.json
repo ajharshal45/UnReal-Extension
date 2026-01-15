@@ -1,7 +1,7 @@
 {
 "manifest_version": 3,
 "name": "UnReal",
-"version": "2.0.0",
+"version": "2.1.0",
 "description": "Advanced AI detection with segment-based analysis - identify AI-generated content, manipulated media, and misinformation",
 "permissions": ["activeTab", "storage", "scripting"],
 "host_permissions": ["<all_urls>"],
@@ -12,7 +12,7 @@
 "content_scripts": [
 {
 "matches": ["<all_urls>"],
-"js": ["contentNew.js"],
+"js": ["lib/ort.min.js", "contentNew.js"],
 "run_at": "document_idle",
 "type": "module"
 }
@@ -28,8 +28,14 @@
 "layer0-metadata.js",
 "layer1-forensic.js",
 "layer2-mathematical.js",
+"layer3-local-ml.js",
 "layer4-gemini.js",
-"imageAnalysisPipeline.js"
+"imageAnalysisPipeline.js",
+"lib/ort.min.js",
+"lib/ort-wasm.wasm",
+"lib/ort-wasm-simd.wasm",
+"models/ai-detector/model.onnx",
+"models/ai-detector/model_info.json"
 ],
 "matches": ["<all_urls>"]
 }

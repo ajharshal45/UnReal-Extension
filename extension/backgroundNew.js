@@ -25,13 +25,13 @@ chrome.storage.sync.get(['geminiApiKey'], (data) => {
 // ═══════════════════════════════════════════════════════════════
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  
+
   // ========== FETCH IMAGE AS BASE64 (CORS Bypass) ==========
   if (message.type === 'FETCH_IMAGE_AS_BASE64') {
     (async () => {
       try {
         const { imageUrl } = message.data;
-        
+
         if (!imageUrl) {
           sendResponse({ success: false, error: 'No image URL provided' });
           return;
@@ -66,7 +66,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
 
         const blob = await response.blob();
-        
+
         // Validate it's actually an image
         if (!blob.type.startsWith('image/')) {
           console.error('[Background] Response is not an image:', blob.type);
@@ -83,16 +83,140 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         });
 
         const base64Data = await base64Promise;
-        
+
         console.log('[Background] Image fetched successfully, size:', Math.round(base64Data.length / 1024), 'KB');
-        
-        sendResponse({ 
-          success: true, 
+
+        sendResponse({
+          success: true,
           base64: base64Data,
           mimeType: blob.type,
           size: blob.size
         });
-        
+
+      } catch (error) {
+        if (error.name === 'AbortError') {
+          console.error('[Background] Image fetch timeout');
+          sendResponse({ success: false, error: 'Timeout' });
+        } else {
+          console.error('[Background] Image fetch error:', error);
+          sendResponse({ success: false, error: error.message });
+        }
+      }
+    })();
+    return true;
+  }
+
+  // ========== ML BACKEND PROXY (Layer 3) ==========
+  if (message.type === 'ML_BACKEND_REQUEST') {
+    (async () => {
+      try {
+        const { endpoint, method, body } = message;
+        const backendUrl = 'http://localhost:8000';
+
+        console.log('[Background] ML Backend request:', endpoint);
+
+        const fetchOptions = {
+          method: method || 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          }
+        };
+
+        if (body) {
+          fetchOptions.body = JSON.stringify(body);
+        }
+
+        const response = await fetch(`${backendUrl}${endpoint}`, fetchOptions);
+
+        if (!response.ok) {
+          sendResponse({
+            success: false,
+            error: `Backend returned ${response.status}`
+          });
+          return;
+        }
+
+        const data = await response.json();
+        console.log('[Background] ML Backend response:', data);
+        sendResponse({ success: true, data });
+
+      } catch (error) {
+        console.log('[Background] ML Backend error:', error.message);
+        sendResponse({
+          success: false,
+          error: error.message
+        });
+      }
+    })();
+    return true;
+  }
+
+  // ========== FETCH IMAGE FOR ANALYSIS (Used by Layer 3 & 4) ==========
+  if (message.type === 'FETCH_IMAGE_FOR_ANALYSIS') {
+    (async () => {
+      try {
+        const imageUrl = message.url;
+
+        if (!imageUrl) {
+          sendResponse({ success: false, error: 'No image URL provided' });
+          return;
+        }
+
+        // Don't try to fetch data URLs
+        if (imageUrl.startsWith('data:')) {
+          sendResponse({ success: true, base64: imageUrl });
+          return;
+        }
+
+        console.log('[Background] FETCH_IMAGE_FOR_ANALYSIS:', imageUrl.substring(0, 60) + '...');
+
+        // Fetch with timeout
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+        const response = await fetch(imageUrl, {
+          method: 'GET',
+          headers: {
+            'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8'
+          },
+          signal: controller.signal
+        });
+
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+          console.error('[Background] Image fetch failed:', response.status);
+          sendResponse({ success: false, error: `HTTP ${response.status}` });
+          return;
+        }
+
+        const blob = await response.blob();
+
+        // Validate it's actually an image
+        if (!blob.type.startsWith('image/')) {
+          console.error('[Background] Response is not an image:', blob.type);
+          sendResponse({ success: false, error: 'Not an image' });
+          return;
+        }
+
+        // Convert blob to base64
+        const base64Promise = new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result);
+          reader.onerror = () => reject(new Error('FileReader error'));
+          reader.readAsDataURL(blob);
+        });
+
+        const base64Data = await base64Promise;
+
+        console.log('[Background] Image fetched for analysis, size:', Math.round(base64Data.length / 1024), 'KB');
+
+        sendResponse({
+          success: true,
+          base64: base64Data
+        });
+
       } catch (error) {
         if (error.name === 'AbortError') {
           console.error('[Background] Image fetch timeout');
@@ -111,7 +235,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       try {
         const { imageUrl, base64Image, apiUser, apiSecret } = message.data;
-        
+
         let response;
         if (imageUrl && !imageUrl.startsWith('data:')) {
           const params = new URLSearchParams({
@@ -130,13 +254,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           }
           const byteArray = new Uint8Array(byteNumbers);
           const blob = new Blob([byteArray], { type: 'image/jpeg' });
-          
+
           const formData = new FormData();
           formData.append('media', blob, 'image.jpg');
           formData.append('models', 'genai');
           formData.append('api_user', apiUser);
           formData.append('api_secret', apiSecret);
-          
+
           response = await fetch('https://api.sightengine.com/1.0/check.json', {
             method: 'POST',
             body: formData
@@ -145,7 +269,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ success: false, error: 'No image data provided' });
           return;
         }
-        
+
         const data = await response.json();
         sendResponse({ success: response.ok, data, status: response.status });
       } catch (error) {
@@ -155,20 +279,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     })();
     return true;
   }
-  
+
   // ========== GEMINI VISION API PROXY ==========
   if (message.type === 'CALL_GEMINI_VISION_API') {
     (async () => {
       try {
         const { base64Image, apiKey, prompt } = message.data;
-        
+
         if (!apiKey) {
           sendResponse({ success: false, error: 'No API key provided' });
           return;
         }
-        
+
         const cleanBase64 = base64Image.includes(',') ? base64Image.split(',')[1] : base64Image;
-        
+
         const requestBody = {
           contents: [{
             parts: [
@@ -186,16 +310,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             maxOutputTokens: 1024
           }
         };
-        
+
         const response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${apiKey}`,
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${apiKey}`,
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(requestBody)
           }
         );
-        
+
         const data = await response.json();
         sendResponse({ success: response.ok, data, status: response.status });
       } catch (error) {
@@ -231,13 +355,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     })();
     return true;
   }
-  
+
   // ========== SEGMENT LLM TIE-BREAKER ==========
   if (message.type === 'ANALYZE_SEGMENT_LLM') {
     (async () => {
       try {
         const settings = await chrome.storage.sync.get(['llmTiebreaker', 'geminiApiKey']);
-        
+
         if (!settings.llmTiebreaker || !settings.geminiApiKey || DEMO_MODE) {
           sendResponse(null);
           return;
@@ -269,7 +393,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse(lastAnalysis);
           return;
         }
-        
+
         const cached = await getLastPageAnalysis();
         sendResponse(cached);
       } catch (error) {
@@ -327,7 +451,7 @@ Respond in valid JSON only:
 
   try {
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${apiKey}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -340,7 +464,7 @@ Respond in valid JSON only:
 
     const data = await response.json();
     const textContent = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    
+
     if (!textContent) return null;
 
     const jsonMatch = textContent.match(/\{[\s\S]*\}/);
@@ -375,7 +499,7 @@ async function getLastPageAnalysis() {
 
     const entries = Object.entries(cache);
     const matching = entries.filter(([key]) => key.includes(new URL(tabs[0].url).hostname));
-    
+
     if (matching.length > 0) {
       const sorted = matching.sort((a, b) => b[1].timestamp - a[1].timestamp);
       return sorted[0][1].data;
