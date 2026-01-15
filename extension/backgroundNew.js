@@ -1,17 +1,11 @@
 // ShareSafe - Background Service Worker v2.0
-// LLM used only as tie-breaker for uncertain cases (35-65 score range)
-
-import { analyzeWithGemini } from './gemini.js';
+// Fixed version with CORS bypass for image fetching
 
 // ═══════════════════════════════════════════════════════════════
 // CONFIGURATION
 // ═══════════════════════════════════════════════════════════════
 
 let DEMO_MODE = false;
-const LLM_SCORE_MIN = 25; // Only use LLM if stat score >= this
-const LLM_SCORE_MAX = 75; // Only use LLM if stat score <= this
-
-// In-memory storage for latest analysis
 let lastAnalysis = null;
 let lastAnalysisTimestamp = 0;
 
@@ -32,7 +26,87 @@ chrome.storage.sync.get(['geminiApiKey'], (data) => {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   
-  // Sightengine API call (proxied through background)
+  // ========== FETCH IMAGE AS BASE64 (CORS Bypass) ==========
+  if (message.type === 'FETCH_IMAGE_AS_BASE64') {
+    (async () => {
+      try {
+        const { imageUrl } = message.data;
+        
+        if (!imageUrl) {
+          sendResponse({ success: false, error: 'No image URL provided' });
+          return;
+        }
+
+        // Don't try to fetch data URLs
+        if (imageUrl.startsWith('data:')) {
+          sendResponse({ success: false, error: 'Cannot fetch data URLs' });
+          return;
+        }
+
+        console.log('[Background] Fetching image:', imageUrl.substring(0, 80) + '...');
+
+        // Fetch with timeout
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+        const response = await fetch(imageUrl, {
+          method: 'GET',
+          headers: {
+            'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8'
+          },
+          signal: controller.signal
+        });
+
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+          console.error('[Background] Image fetch failed:', response.status);
+          sendResponse({ success: false, error: `HTTP ${response.status}` });
+          return;
+        }
+
+        const blob = await response.blob();
+        
+        // Validate it's actually an image
+        if (!blob.type.startsWith('image/')) {
+          console.error('[Background] Response is not an image:', blob.type);
+          sendResponse({ success: false, error: 'Not an image' });
+          return;
+        }
+
+        // Convert blob to base64
+        const base64Promise = new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result);
+          reader.onerror = () => reject(new Error('FileReader error'));
+          reader.readAsDataURL(blob);
+        });
+
+        const base64Data = await base64Promise;
+        
+        console.log('[Background] Image fetched successfully, size:', Math.round(base64Data.length / 1024), 'KB');
+        
+        sendResponse({ 
+          success: true, 
+          base64: base64Data,
+          mimeType: blob.type,
+          size: blob.size
+        });
+        
+      } catch (error) {
+        if (error.name === 'AbortError') {
+          console.error('[Background] Image fetch timeout');
+          sendResponse({ success: false, error: 'Timeout' });
+        } else {
+          console.error('[Background] Image fetch error:', error);
+          sendResponse({ success: false, error: error.message });
+        }
+      }
+    })();
+    return true;
+  }
+
+  // ========== SIGHTENGINE API PROXY ==========
   if (message.type === 'CALL_SIGHTENGINE_API') {
     (async () => {
       try {
@@ -40,7 +114,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         
         let response;
         if (imageUrl && !imageUrl.startsWith('data:')) {
-          // URL-based
           const params = new URLSearchParams({
             url: imageUrl,
             models: 'genai',
@@ -49,7 +122,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           });
           response = await fetch(`https://api.sightengine.com/1.0/check.json?${params}`);
         } else if (base64Image) {
-          // Base64-based
           const base64Data = base64Image.split(',')[1] || base64Image;
           const byteCharacters = atob(base64Data);
           const byteNumbers = new Array(byteCharacters.length);
@@ -84,11 +156,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   
-  // Gemini Vision API call (proxied through background)
+  // ========== GEMINI VISION API PROXY ==========
   if (message.type === 'CALL_GEMINI_VISION_API') {
     (async () => {
       try {
         const { base64Image, apiKey, prompt } = message.data;
+        
+        if (!apiKey) {
+          sendResponse({ success: false, error: 'No API key provided' });
+          return;
+        }
         
         const cleanBase64 = base64Image.includes(',') ? base64Image.split(',')[1] : base64Image;
         
@@ -114,9 +191,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${apiKey}`,
           {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json'
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(requestBody)
           }
         );
@@ -130,31 +205,34 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     })();
     return true;
   }
-  
-  // Analyze image with LLM (tie-breaker only)
-  if (message.type === 'ANALYZE_IMAGE') {
+
+  // ========== GET API CREDENTIALS ==========
+  if (message.type === 'GET_API_CREDENTIALS') {
     (async () => {
       try {
-        // Check if LLM is enabled
-        const settings = await chrome.storage.sync.get(['llmTiebreaker', 'geminiApiKey']);
-        
-        if (!settings.llmTiebreaker || !settings.geminiApiKey || DEMO_MODE) {
-          sendResponse(null);
-          return;
-        }
-
-        // Analyze image with Gemini
-        const result = await analyzeImageWithGemini(message.imageSrc, settings.geminiApiKey);
-        sendResponse(result);
+        const data = await chrome.storage.sync.get([
+          'geminiApiKey',
+          'sightengineUser',
+          'sightengineSecret'
+        ]);
+        sendResponse({
+          geminiApiKey: data.geminiApiKey || null,
+          sightengineUser: data.sightengineUser || null,
+          sightengineSecret: data.sightengineSecret || null
+        });
       } catch (error) {
-        console.error('ShareSafe: Image analysis error', error);
-        sendResponse(null);
+        console.error('[Background] Error getting credentials:', error);
+        sendResponse({
+          geminiApiKey: null,
+          sightengineUser: null,
+          sightengineSecret: null
+        });
       }
     })();
-    return true; // Keep channel open for async response
+    return true;
   }
-
-  // Analyze segment with LLM (tie-breaker only)
+  
+  // ========== SEGMENT LLM TIE-BREAKER ==========
   if (message.type === 'ANALYZE_SEGMENT_LLM') {
     (async () => {
       try {
@@ -165,16 +243,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return;
         }
 
-        // Only use LLM if score is in uncertain range
         const statScore = message.statScore || 50;
-        if (statScore < LLM_SCORE_MIN || statScore > LLM_SCORE_MAX) {
+        if (statScore < 25 || statScore > 75) {
           sendResponse(null);
           return;
         }
 
         console.log('ShareSafe: Using LLM tie-breaker for uncertain segment (score:', statScore, ')');
 
-        // Analyze with Gemini
         const result = await analyzeSegmentWithGemini(message.text, settings.geminiApiKey);
         sendResponse(result);
       } catch (error) {
@@ -185,17 +261,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  // Legacy page analysis (for popup)
+  // ========== PAGE ANALYSIS ==========
   if (message.type === 'GET_PAGE_ANALYSIS' || message.type === 'GET_LAST_ANALYSIS') {
     (async () => {
       try {
-        // Return in-memory analysis if recent (within 5 minutes)
         if (lastAnalysis && (Date.now() - lastAnalysisTimestamp) < 300000) {
           sendResponse(lastAnalysis);
           return;
         }
         
-        // Otherwise try to get from cache
         const cached = await getLastPageAnalysis();
         sendResponse(cached);
       } catch (error) {
@@ -206,11 +280,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  // Store analysis from content script
+  // ========== STORE ANALYSIS ==========
   if (message.type === 'STORE_ANALYSIS') {
     (async () => {
       try {
-        // Store in memory for quick popup access
         lastAnalysis = message.data;
         lastAnalysisTimestamp = Date.now();
         sendResponse({ success: true });
@@ -226,54 +299,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // ═══════════════════════════════════════════════════════════════
-// IMAGE ANALYSIS WITH GEMINI
-// ═══════════════════════════════════════════════════════════════
-
-async function analyzeImageWithGemini(imageSrc, apiKey) {
-  const prompt = `
-Analyze this image to determine if it was AI-generated.
-
-Image URL: ${imageSrc}
-
-Look for:
-1. AI generation artifacts (unusual textures, warping, inconsistencies)
-2. Synthetic/computer-generated appearance
-3. Typical AI art style (overly smooth, perfect, or surreal)
-4. Anatomical impossibilities or physics violations (common in AI images)
-5. Text/writing that is garbled or nonsensical
-6. Lighting or shadow inconsistencies
-
-Respond in valid JSON only:
-{
-  "score": number 0-100 (100 = definitely AI-generated),
-  "confidence": number 0-100,
-  "reasons": ["specific observation 1", "specific observation 2"],
-  "interpretation": "brief assessment"
-}
-`;
-
-  try {
-    const result = await analyzeWithGemini({ 
-      title: '',
-      bodyText: prompt,
-      imageUrl: imageSrc 
-    }, apiKey);
-
-    return {
-      score: result.score || 50,
-      confidence: 70, // Gemini's confidence
-      reasons: result.reasons || [],
-      interpretation: result.summary || 'AI analysis complete',
-      method: 'gemini'
-    };
-  } catch (error) {
-    console.error('ShareSafe: Gemini image analysis failed', error);
-    return null;
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// SEGMENT ANALYSIS WITH GEMINI (TIE-BREAKER)
+// SEGMENT ANALYSIS WITH GEMINI
 // ═══════════════════════════════════════════════════════════════
 
 async function analyzeSegmentWithGemini(text, apiKey) {
@@ -300,16 +326,33 @@ Respond in valid JSON only:
 `;
 
   try {
-    const result = await analyzeWithGemini({
-      title: '',
-      bodyText: prompt
-    }, apiKey);
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.1, maxOutputTokens: 512 }
+        })
+      }
+    );
+
+    const data = await response.json();
+    const textContent = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    
+    if (!textContent) return null;
+
+    const jsonMatch = textContent.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return null;
+
+    const result = JSON.parse(jsonMatch[0]);
 
     return {
       score: result.score || 50,
       confidence: 70,
       reasons: result.reasons || [],
-      interpretation: result.summary || 'AI analysis complete',
+      interpretation: result.interpretation || 'AI analysis complete',
       method: 'gemini'
     };
   } catch (error) {
@@ -327,16 +370,13 @@ async function getLastPageAnalysis() {
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tabs[0]?.url) return null;
 
-    // Try to get cached analysis
     const data = await chrome.storage.local.get(['cache_page']);
     const cache = data.cache_page || {};
 
-    // Find most recent analysis for this URL
     const entries = Object.entries(cache);
     const matching = entries.filter(([key]) => key.includes(new URL(tabs[0].url).hostname));
     
     if (matching.length > 0) {
-      // Return most recent
       const sorted = matching.sort((a, b) => b[1].timestamp - a[1].timestamp);
       return sorted[0][1].data;
     }
@@ -348,4 +388,4 @@ async function getLastPageAnalysis() {
   }
 }
 
-console.log('ShareSafe v2.0: Background worker initialized. LLM tie-breaker mode:', !DEMO_MODE);
+console.log('ShareSafe v2.0: Background worker initialized with CORS bypass. LLM tie-breaker mode:', !DEMO_MODE);

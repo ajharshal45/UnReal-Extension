@@ -1,8 +1,8 @@
 // ShareSafe Content Script v2.0 - Segment-Based AI Detection
 // Integrates all new modules for sophisticated AI content analysis
 
-// Import the new layered analysis pipeline
-import { ImageAnalysisPipeline } from './imageAnalysisPipeline.js';
+// NOTE: Pipeline is loaded dynamically - Chrome content scripts cannot use static imports
+// All modules use chrome.runtime.getURL() for dynamic imports
 
 // Check if extension is enabled
 (async function () {
@@ -146,9 +146,6 @@ import { ImageAnalysisPipeline } from './imageAnalysisPipeline.js';
         createSummaryPanel(pageAnalysis);
       }
 
-      // Floating badge disabled - use popup instead
-      // updateFloatingBadge(pageAnalysis);
-
     } catch (error) {
       console.error('ShareSafe: Segment analysis error:', error);
     }
@@ -162,7 +159,7 @@ import { ImageAnalysisPipeline } from './imageAnalysisPipeline.js';
     constructor() {
       this.queue = [];
       this.processing = 0;
-      this.maxConcurrent = 2; // Reduced from 3 to 2 to avoid rate limits
+      this.maxConcurrent = 2;
       this.checkedImages = new Set();
       this.analysisResults = new Map();
       this.mutationObserver = null;
@@ -172,17 +169,19 @@ import { ImageAnalysisPipeline } from './imageAnalysisPipeline.js';
       this.sightengineSecret = null;
       this.aiImageCount = 0;
       this.isEnabled = true;
-      this.processDelay = 800; // Increased from 500ms to 800ms
+      this.processDelay = 800;
       this.lastProcessTime = 0;
 
       // NEW: Image Analysis Pipeline (layers 0-4)
-      this.pipeline = new ImageAnalysisPipeline();
+      // Pipeline is loaded dynamically to avoid import issues
+      this.pipeline = null;
       this.pipelineInitialized = false;
+      this.pipelineLoading = null;
 
       // Gemini rate limiting (free tier: 15 requests per minute)
       this.geminiRequestTimes = [];
-      this.geminiMaxPerMinute = 2; // Testing: 2 requests per minute
-      this.geminiMinDelay = 6000; // Minimum 6 seconds between Gemini requests
+      this.geminiMaxPerMinute = 2;
+      this.geminiMinDelay = 6000;
 
       // Trusted domains to skip
       this.trustedDomains = [
@@ -205,6 +204,47 @@ import { ImageAnalysisPipeline } from './imageAnalysisPipeline.js';
     }
 
     // ═══════════════════════════════════════════════════════════════
+    // PIPELINE LOADER (Dynamic Import)
+    // ═══════════════════════════════════════════════════════════════
+
+    async loadPipeline() {
+      // Return existing promise if already loading
+      if (this.pipelineLoading) {
+        return this.pipelineLoading;
+      }
+
+      // Return immediately if already initialized
+      if (this.pipelineInitialized && this.pipeline) {
+        return this.pipeline;
+      }
+
+      // Start loading
+      this.pipelineLoading = (async () => {
+        try {
+          console.log('[ImageScanner] Loading analysis pipeline...');
+
+          // Dynamic import using chrome.runtime.getURL
+          const pipelineModule = await import(chrome.runtime.getURL('imageAnalysisPipeline.js'));
+
+          this.pipeline = new pipelineModule.ImageAnalysisPipeline();
+          await this.pipeline.initialize();
+          this.pipelineInitialized = true;
+
+          console.log('[ImageScanner] Pipeline loaded successfully');
+          return this.pipeline;
+        } catch (error) {
+          console.error('[ImageScanner] Failed to load pipeline:', error);
+          this.pipelineLoading = null; // Allow retry
+          this.pipeline = null;
+          this.pipelineInitialized = false;
+          throw error;
+        }
+      })();
+
+      return this.pipelineLoading;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
     // INITIALIZATION
     // ═══════════════════════════════════════════════════════════════
 
@@ -212,7 +252,7 @@ import { ImageAnalysisPipeline } from './imageAnalysisPipeline.js';
       console.log('[ImageScanner] Initializing automatic image detection...');
 
       try {
-        // Import imageDetector module
+        // Import imageDetector module (for fallback)
         const imageDetectorModule = await import(chrome.runtime.getURL('imageDetector.js'));
         this.imageDetector = imageDetectorModule;
 
@@ -870,10 +910,12 @@ import { ImageAnalysisPipeline } from './imageAnalysisPipeline.js';
       const spinner = this.showSpinner(img);
 
       try {
-        // Initialize pipeline if not already done
-        if (!this.pipelineInitialized) {
-          await this.pipeline.initialize();
-          this.pipelineInitialized = true;
+        // Load pipeline dynamically if not already done
+        await this.loadPipeline();
+
+        // Check if pipeline loaded successfully
+        if (!this.pipeline) {
+          throw new Error('Pipeline not available');
         }
 
         // Use the new layered analysis pipeline
@@ -1419,6 +1461,11 @@ import { ImageAnalysisPipeline } from './imageAnalysisPipeline.js';
       this.queue = [];
       this.checkedImages.clear();
       this.analysisResults.clear();
+
+      // Terminate pipeline
+      if (this.pipeline) {
+        this.pipeline.terminate();
+      }
 
       // Remove all badges and wrappers
       document.querySelectorAll('.unreal-image-badge').forEach(el => el.remove());
