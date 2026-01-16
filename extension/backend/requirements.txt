@@ -1,8 +1,15 @@
 # UnReal ML Backend Requirements
 # Install with: pip install -r requirements.txt
 
+# Image Detection Backend (FastAPI)
 fastapi>=0.109.0
 uvicorn>=0.27.0
+
+# Text Detection Backend (Flask)
+flask>=3.0.0
+flask-cors>=4.0.0
+
+# Shared ML Dependencies
 torch>=2.0.0
 transformers>=4.36.0
 Pillow>=10.0.0
