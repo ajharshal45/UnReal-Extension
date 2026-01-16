@@ -1,8 +1,15 @@
-// ShareSafe Content Script v2.0 - Segment-Based AI Detection
-// Integrates all new modules for sophisticated AI content analysis
+// ShareSafe Content Script v2.2 - Unified AI Detection
+// Integrates text and image detection with social media scanning
 
 // NOTE: Pipeline is loaded dynamically - Chrome content scripts cannot use static imports
 // All modules use chrome.runtime.getURL() for dynamic imports
+
+// ═══════════════════════════════════════════════════════════════
+// TEXT DETECTION MODULES (Dynamically Loaded)
+// ═══════════════════════════════════════════════════════════════
+let patternDatabase = null;
+let socialMediaScanner = null;
+let textDetectionEnabled = false;
 
 // Check if extension is enabled
 (async function () {
@@ -46,7 +53,196 @@
   // Don't run on browser internal pages
   if (location.protocol === 'chrome:' || location.protocol === 'chrome-extension:') return;
 
-  console.log('%c[ShareSafe v2.0] Segment-Based AI Detection Active', 'color: #4f46e5; font-weight: bold; font-size: 14px;');
+  console.log('%c[ShareSafe v2.2] Unified AI Detection Active', 'color: #4f46e5; font-weight: bold; font-size: 14px;');
+
+  // ═══════════════════════════════════════════════════════════════
+  // TEXT DETECTION - Load Modules
+  // ═══════════════════════════════════════════════════════════════
+  
+  async function initTextDetection() {
+    try {
+      // Load pattern database
+      const patternModule = await import(chrome.runtime.getURL('patternDatabase.js'));
+      patternDatabase = patternModule.AI_PHRASES;
+      
+      // Load social media scanner
+      const scannerModule = await import(chrome.runtime.getURL('socialMediaScanner.js'));
+      socialMediaScanner = scannerModule;
+      
+      textDetectionEnabled = true;
+      console.log('[TextDetection] Modules loaded successfully');
+      
+      // Detect platform
+      const platform = socialMediaScanner.detectPlatform();
+      if (platform !== 'generic') {
+        console.log('[TextDetection] Platform detected:', platform);
+        startSocialMediaScanning(platform);
+      }
+    } catch (error) {
+      console.error('[TextDetection] Failed to load modules:', error);
+      textDetectionEnabled = false;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // TEXT ANALYSIS FUNCTIONS
+  // ═══════════════════════════════════════════════════════════════
+
+  async function analyzeTextForAI(text) {
+    if (!text || text.length < 50) return null;
+    
+    try {
+      // Step 1: Pattern-based detection (fast, no API)
+      const patternScore = checkTextPatterns(text);
+      
+      // Step 2: If score is inconclusive (40-60%), call ML backend
+      if (patternScore > 40 && patternScore < 60) {
+        const mlResult = await callTextDetectionAPI(text);
+        if (mlResult) {
+          return {
+            score: mlResult.ai_score,
+            confidence: mlResult.confidence,
+            method: 'ml',
+            details: mlResult
+          };
+        }
+      }
+      
+      // Return pattern-based result
+      return {
+        score: patternScore,
+        confidence: Math.min(70, Math.abs(patternScore - 50) * 2),
+        method: 'pattern',
+        matchCount: 0
+      };
+    } catch (error) {
+      console.error('[TextDetection] Analysis error:', error);
+      return null;
+    }
+  }
+
+  function checkTextPatterns(text) {
+    if (!patternDatabase) return 0;
+    
+    let totalScore = 0;
+    let matchCount = 0;
+    
+    // Check all pattern categories
+    for (const category in patternDatabase) {
+      const patterns = patternDatabase[category];
+      if (!Array.isArray(patterns)) continue;
+      
+      for (const phrase of patterns) {
+        if (phrase.pattern && phrase.pattern.test(text)) {
+          totalScore += phrase.score || 50;
+          matchCount++;
+        }
+      }
+    }
+    
+    // Return average score if matches found, otherwise 0
+    return matchCount > 0 ? Math.min(100, totalScore / matchCount) : 0;
+  }
+
+  async function callTextDetectionAPI(text) {
+    try {
+      const response = await fetch('http://localhost:8001/detect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text })
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        console.log('[TextDetection] ML API result:', data);
+        return data;
+      }
+      return null;
+    } catch (error) {
+      console.warn('[TextDetection] ML API not available:', error.message);
+      return null;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // SOCIAL MEDIA SCANNING
+  // ═══════════════════════════════════════════════════════════════
+
+  function startSocialMediaScanning(platform) {
+    if (!socialMediaScanner) return;
+    
+    const selectors = socialMediaScanner.PLATFORM_SELECTORS[platform];
+    if (!selectors || selectors.length === 0) return;
+    
+    console.log('[SocialScanner] Starting scan for platform:', platform);
+    
+    // Scan existing content
+    scanSocialMediaPosts(selectors);
+    
+    // Watch for new posts
+    const observer = new MutationObserver(() => {
+      scanSocialMediaPosts(selectors);
+    });
+    
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+  }
+
+  function scanSocialMediaPosts(selectors) {
+    for (const selector of selectors) {
+      try {
+        const elements = document.querySelectorAll(selector);
+        elements.forEach(element => {
+          // Skip if already processed
+          if (element.dataset?.sharesafeTextProcessed === 'true') return;
+          
+          const content = socialMediaScanner.extractPostContent(element);
+          if (content && content.text && content.wordCount > 15) {
+            analyzeTextForAI(content.text).then(result => {
+              if (result && result.score > 70) {
+                highlightTextElement(element, result);
+              }
+              element.dataset.sharesafeTextProcessed = 'true';
+            });
+          }
+        });
+      } catch (e) {
+        // Ignore selector errors
+      }
+    }
+  }
+
+  function highlightTextElement(element, result) {
+    // Add subtle indicator for AI-detected text
+    if (!element.style.position || element.style.position === 'static') {
+      element.style.position = 'relative';
+    }
+    
+    const indicator = document.createElement('div');
+    indicator.className = 'sharesafe-text-indicator';
+    indicator.innerHTML = '🤖';
+    indicator.title = `AI Detection: ${result.score.toFixed(0)}% (${result.method})`;
+    indicator.style.cssText = `
+      position: absolute;
+      top: 4px;
+      right: 4px;
+      width: 20px;
+      height: 20px;
+      background: rgba(239, 68, 68, 0.9);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      cursor: pointer;
+      z-index: 9999;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    `;
+    
+    element.appendChild(indicator);
+  }
 
   // ═══════════════════════════════════════════════════════════════
   // MAIN ANALYSIS FUNCTION
@@ -1621,6 +1817,9 @@
   // ═══════════════════════════════════════════════════════════════
 
   function init() {
+    // Initialize text detection first
+    initTextDetection();
+    
     // Floating badge disabled - use popup instead
     // createFloatingBadge();
 

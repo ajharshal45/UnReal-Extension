@@ -79,6 +79,40 @@ document.addEventListener('DOMContentLoaded', async () => {
     }, 2000);
   });
 
+  // ═══════════════════════════════════════════════════════════════
+  // BACKEND STATUS DISPLAY
+  // ═══════════════════════════════════════════════════════════════
+
+  async function updateBackendStatus() {
+    const backendStatusDiv = document.getElementById('backend-status');
+    
+    // Get backend status from storage
+    const { backendStatus } = await chrome.storage.local.get('backendStatus');
+    
+    if (backendStatus) {
+      backendStatusDiv.innerHTML = `
+        <div class="status-item">
+          <span style="font-size: 12px;">Image Detection:</span>
+          <span class="status-badge ${backendStatus.image ? 'online' : 'offline'}">
+            ${backendStatus.image ? '✓ Online' : '✗ Offline'}
+          </span>
+        </div>
+        <div class="status-item">
+          <span style="font-size: 12px;">Text Detection:</span>
+          <span class="status-badge ${backendStatus.text ? 'online' : 'offline'}">
+            ${backendStatus.text ? '✓ Online' : '✗ Offline'}
+          </span>
+        </div>
+      `;
+    }
+  }
+
+  // Update backend status on popup open
+  updateBackendStatus();
+
+  // Refresh backend status every 5 seconds while popup is open
+  setInterval(updateBackendStatus, 5000);
+
   // Get current tab info
   let currentTab = null;
   try {

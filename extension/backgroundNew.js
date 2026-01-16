@@ -1,5 +1,6 @@
-// ShareSafe - Background Service Worker v2.0
+// ShareSafe - Background Service Worker v2.2
 // Fixed version with CORS bypass for image fetching
+// Added text detection backend support
 
 // ═══════════════════════════════════════════════════════════════
 // CONFIGURATION
@@ -8,6 +9,11 @@
 let DEMO_MODE = false;
 let lastAnalysis = null;
 let lastAnalysisTimestamp = 0;
+let backendStatus = {
+  image: false,
+  text: false,
+  lastCheck: 0
+};
 
 // Check if API key exists
 chrome.storage.sync.get(['geminiApiKey'], (data) => {
@@ -512,4 +518,57 @@ async function getLastPageAnalysis() {
   }
 }
 
-console.log('ShareSafe v2.0: Background worker initialized with CORS bypass. LLM tie-breaker mode:', !DEMO_MODE);
+console.log('ShareSafe v2.2: Background worker initialized with CORS bypass. LLM tie-breaker mode:', !DEMO_MODE);
+
+// ═══════════════════════════════════════════════════════════════
+// BACKEND HEALTH CHECK
+// ═══════════════════════════════════════════════════════════════
+
+async function checkBackendHealth() {
+  const now = Date.now();
+  
+  // Only check every 30 seconds
+  if (now - backendStatus.lastCheck < 30000) {
+    return backendStatus;
+  }
+  
+  console.log('[Background] Checking backend health...');
+  
+  // Check image backend (port 8000)
+  try {
+    const imageResponse = await fetch('http://localhost:8000/health', {
+      method: 'GET',
+      signal: AbortSignal.timeout(2000)
+    });
+    backendStatus.image = imageResponse.ok;
+  } catch (error) {
+    backendStatus.image = false;
+  }
+  
+  // Check text backend (port 8001)
+  try {
+    const textResponse = await fetch('http://localhost:8001/detect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: 'health check' }),
+      signal: AbortSignal.timeout(2000)
+    });
+    backendStatus.text = textResponse.ok;
+  } catch (error) {
+    backendStatus.text = false;
+  }
+  
+  backendStatus.lastCheck = now;
+  
+  // Store in chrome.storage for popup access
+  chrome.storage.local.set({ backendStatus });
+  
+  console.log('[Background] Backend status:', backendStatus);
+  return backendStatus;
+}
+
+// Check backend health on startup
+checkBackendHealth();
+
+// Check periodically (every 60 seconds)
+setInterval(checkBackendHealth, 60000);
