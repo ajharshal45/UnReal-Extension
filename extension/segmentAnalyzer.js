@@ -254,8 +254,61 @@ export async function scoreSegment(segment, options = {}) {
     finalScore = (statScore * 0.75) + (patternScore * 0.25);
   }
 
-  // FIX: Deduplicate reasons to avoid repeated messages (again, just in case)
+  // FIX: Deduplicate reasons to avoid repeated messages
   reasons = [...new Set(reasons)];
+
+  // ─── LOCAL ML SAFETY GUARD (False Positive Check) ───
+  // Call ONLY if: Long text, High Score, High Confidence, Formal Domain
+  let isSocialMedia = false;
+  if (typeof window !== 'undefined' && window.location && window.location.hostname) {
+    isSocialMedia = /(twitter|x\.com|instagram|facebook|reddit)/i.test(window.location.hostname);
+  }
+
+  if (segWordCount >= 120 && statScore >= 55 && stats.confidence >= 50 && !isSocialMedia) {
+    try {
+      console.log('[AI-DETECTOR][ML] Checking local ML guard...');
+      const mlResult = await callLocalMLDetector(text);
+
+      if (mlResult) {
+        console.log(`[AI-DETECTOR][ML] Result: Human=${mlResult.human_score}, AI=${mlResult.ai_score}, Conf=${mlResult.confidence}, Formal=${mlResult.is_formal_style}`);
+
+        // Logic Rule 1: Ignore low confidence ML results
+        if (mlResult.confidence < 40) {
+          console.log(`[AI-DETECTOR][ML] Ignored: Low confidence (${mlResult.confidence} < 40)`);
+        }
+        // Logic Rule 2: If Human Score >= 85 (Strong Human Signal)
+        else if (mlResult.human_score >= 85) {
+          const reduction = 0.3; // 30% reduction
+          const oldConf = stats.confidence;
+          const reducedConf = Math.round(stats.confidence * (1 - reduction));
+          forceConfidence = reducedConf;
+          reasons.push('Human-like writing style verified by ML');
+          console.log(`[AI-DETECTOR][ML] ACTION: Conf reduced ${oldConf} -> ${reducedConf}% (Verified Human Step 2)`);
+        }
+        // Logic Rule 3: If AI Score >= 80 -> DO NOTHING
+        else if (mlResult.ai_score >= 80) {
+          console.log(`[AI-DETECTOR][ML] Ignored: AI Signal (${mlResult.ai_score}) - Safety Constraint active`);
+        }
+        else {
+          console.log('[AI-DETECTOR][ML] Ignored: No action thresholds met');
+        }
+
+        // Logic Rule 4: Formal Style Governance
+        if (mlResult.is_formal_style) {
+          reasons.push('Formal writing style detected (Warning: may resemble AI)');
+          if (forceConfidence === null || forceConfidence > 45) {
+            forceConfidence = 45;
+            console.log('[AI-DETECTOR][ML] ACTION: Confidence capped at 45% due to formal style');
+          }
+        }
+      } else {
+        console.log('[AI-DETECTOR][ML] IGNORED: No result returned (Timeout or API Error)');
+      }
+    } catch (e) {
+      // Silent fail
+      console.warn('[AI-DETECTOR][ML] Failed silently:', e);
+    }
+  }
 
   let llmUsed = false;
 
@@ -312,12 +365,26 @@ export async function scoreSegment(segment, options = {}) {
   if (finalScore >= highRiskThreshold) riskLevel = 'high';
   else if (finalScore >= 35) riskLevel = 'medium';
 
+  // ─── FINAL CONFIDENCE GOVERNANCE (Step 3) ───
+  // Use forceConfidence if set (override), otherwise use statistical confidence
+  let finalConfidence = forceConfidence !== null ? forceConfidence : stats.confidence;
+
+  // 1. Wikipedia/Encyclopedic Cap (Strict)
+  if (typeof window !== 'undefined' && /wikipedia\.org|wiki|encyclopedia/i.test(window.location.hostname)) {
+    finalConfidence = Math.min(finalConfidence, 40);
+  }
+
+  // 2. Short Text Cap (Strict)
+  if (segWordCount < 50) {
+    finalConfidence = Math.min(finalConfidence, 40);
+  }
+
   return {
     segmentId: segment.id,
     score: Math.round(finalScore),
     statScore: Math.round(statScore),
     patternScore: Math.round(patternScore),
-    confidence: Math.round(forceConfidence !== null ? Math.max(stats.confidence, forceConfidence) : stats.confidence),
+    confidence: Math.round(finalConfidence),
     riskLevel,
     reasons: reasons.slice(0, 5), // Top 5 reasons
     statistics: stats,
@@ -718,3 +785,112 @@ export async function analyzePageSegments(rootElement = document.body, options =
     llmUsedCount
   };
 }
+
+// ═══════════════════════════════════════════════════════════════
+// LOCAL ML HELPER (Step 3 Addition)
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Call local Flask API for secondary ML signal
+ * Fails silently/quickly if offline
+ */
+// Serialization queue to prevent parallel ML floods
+// Serialization queue to prevent parallel ML floods
+let mlQueue = Promise.resolve();
+const mlCache = new Map();
+
+/**
+ * Call local Flask API for secondary ML signal
+ * Features: Serialized queue, Caching, Retry on Timeout, Robust Logging
+ */
+async function callLocalMLDetector(text) {
+  // 1. Check Cache (Debounce/Deduplicate)
+  const textHash = `${text.slice(0, 50)}_${text.length}`;
+
+  if (mlCache.has(textHash)) {
+    console.log('[AI-DETECTOR][ML] Cache hit for segment');
+    return mlCache.get(textHash);
+  }
+
+  // 2. Define Fetch Logic with Retry
+  const performFetch = async () => {
+    const MAX_RETRIES = 1;
+
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const controller = new AbortController();
+        // Increased timeout to 6000ms (Step 1)
+        const id = setTimeout(() => {
+          controller.abort();
+          console.warn(`[AI-DETECTOR][ML] Timeout after 6000ms (Attempt ${attempt + 1})`);
+        }, 6000);
+
+        if (attempt > 0) console.log(`[AI-DETECTOR][ML] Retrying... (Attempt ${attempt + 1})`);
+        else console.log('[AI-DETECTOR][ML] Fetch started');
+
+        const response = await fetch('http://127.0.0.1:8000/detect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }),
+          signal: controller.signal,
+          mode: 'cors',
+          cache: 'no-store',
+          credentials: 'omit'
+        });
+
+        clearTimeout(id);
+
+        if (!response.ok) {
+          console.warn(`[AI-DETECTOR][ML] API Error: ${response.status} ${response.statusText}`);
+          return null;
+        }
+
+        const data = await response.json();
+        console.log('[AI-DETECTOR][ML] Response received');
+        console.log('[AI-DETECTOR][ML] Parsed ML result:', JSON.stringify(data));
+
+        if (!data || typeof data.human_score !== 'number') {
+          console.warn('[AI-DETECTOR][ML] Invalid response format:', data);
+          return null;
+        }
+
+        return data;
+
+      } catch (err) {
+        if (err.name === 'AbortError') {
+          console.warn('[AI-DETECTOR][ML] Fetch aborted due to timeout');
+        } else {
+          console.warn(`[AI-DETECTOR][ML] Network error: ${err.message}`);
+        }
+      }
+    }
+
+    console.warn('[AI-DETECTOR][ML] Final failure after retries');
+    return null;
+  };
+
+  // 3. Queue Execution (Serialization)
+  return new Promise(resolve => {
+    mlQueue = mlQueue.then(async () => {
+      // Double check cache inside lock
+      if (mlCache.has(textHash)) {
+        resolve(mlCache.get(textHash));
+        return;
+      }
+
+      const result = await performFetch();
+
+      if (result) {
+        mlCache.set(textHash, result);
+        // Limit cache size to 100
+        if (mlCache.size > 100) {
+          const firstKey = mlCache.keys().next().value;
+          mlCache.delete(firstKey);
+        }
+      }
+
+      resolve(result);
+    }).catch(() => resolve(null));
+  });
+}
+

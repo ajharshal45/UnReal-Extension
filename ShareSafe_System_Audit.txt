@@ -456,3 +456,1995 @@ YES, with caveats:
 It does not prove authorship. A high score means 'worth reviewing,' not 
 'definitely AI.' False positives occur on formal, encyclopedic, or edited 
 content. Use as one signal among many."
+
+================================================================================
+SECTION TITLE
+================================================================================
+Pattern Detection Logic — Detailed Technical Breakdown
+
+================================================================================
+OBJECTIVE
+================================================================================
+Document the internal logic, detection rules, and reasoning for EACH pattern-based 
+AI signal used in ShareSafe.
+
+These pattern detectors are part of `segmentAnalyzer.js` and are used to identify 
+AI-style writing fingerprints.
+
+================================================================================
+PATTERNS TO DOCUMENT
+================================================================================
+
+1. AI Phrases
+--------------------------------------------------------------------------------
+Examples: "It is important to note", "In conclusion", "This article explores"
+
+1. **Detection Logic:** 
+   - Uses a `RegExp` pattern library (`aiPhrases` array) with word boundary anchors (`\b`).
+   - Each match adds a specific weight to the segment's pattern score (e.g., "It is important to note" adds +18 points).
+   - Some phrases (e.g., "moreover", "therefore") use a frequency threshold (must appear 3+ times) to trigger.
+
+2. **Why AI models trigger this:** 
+   - RLHF training biases models toward academic, neutral, and explanatory tones.
+   - Models use transitional phrases to structure logic ("In conclusion") or hedge statements ("It is important to note").
+
+3. **Why humans may trigger it (edge cases):** 
+   - Academic writing, technical documentation, and formal journalism often use these precise transitions.
+
+4. **How ShareSafe mitigates false positives:** 
+   - Context detection: Signals are weighted less in "Long Text" mode where statistics rule.
+   - Thresholds: Single occurrences of common connectors (like "moreover") are ignored; only clusters trigger the signal.
+
+5. **Signal strength:** 
+   - **Strong** for specific multi-word phrases ("It is important to note").
+   - **Weak/Medium** for single transitional words unless heavily repeated.
+
+--------------------------------------------------------------------------------
+
+2. Markdown Artifacts
+--------------------------------------------------------------------------------
+Examples: **Bold headers**, ### Headings, Numbered lists in casual text
+
+1. **Detection Logic:** 
+   - Scans for leftover Markdown syntax usually stripped by front-ends but present in raw LLM output.
+   - Regex: `/\*\*(.*?)\*\*/` (bold) and `/\b\d+\.\s+[A-Z]/` (numbered lists).
+   - Logic: Triggers ONLY if the text segment is short (<200 characters) AND contains multiple instances.
+
+2. **Why AI models trigger this:** 
+   - LLMs default to Markdown formatting for structure. Users often copy-paste the raw "Chat" output directly.
+
+3. **Why humans may trigger it (edge cases):** 
+   - Developers writing technical comments.
+   - Users deliberately formatting Reddit/Discord posts (though ShareSafe targets web page content where raw markdown is rare).
+
+4. **How ShareSafe mitigates false positives:** 
+   - Length Constraint: This check is DISABLED for text > 200 characters (where markdown might be legitimate content structure).
+   - Frequency Threshold: Requires >= 2 instances to flag.
+
+5. **Signal strength:** 
+   - **Strong / Definitive** for short text comments.
+
+--------------------------------------------------------------------------------
+
+3. Terminal Emojis
+--------------------------------------------------------------------------------
+Examples: "Here’s the summary 🚀", "Hope this helps 😊"
+
+1. **Detection Logic:** 
+   - Regex checks for an emoji character located specifically at the *very end* of the text string.
+   - Pattern: `/[\u{1F300}-\u{1FAFF}][^a-zA-Z0-9]*$/u` (Emoji followed by only non-alphanumeric chars at end of string).
+
+2. **Why AI models trigger this:** 
+   - Models are trained to be "helpful assistants" and often sign off responses with a single friendly emoji.
+
+3. **Why humans may trigger it (edge cases):** 
+   - Social media users ending posts with emojis.
+   - Use of single emojis as reactions.
+
+4. **How ShareSafe mitigates false positives:** 
+   - Position Specificity: Only flags if the emoji is the *terminal* character. Mid-sentence emojis are ignored or count toward human "burstiness".
+
+5. **Signal strength:** 
+   - **Strong** (weighted heavily in "Short Text" mode).
+
+--------------------------------------------------------------------------------
+
+4. Self-Disclosure Patterns
+--------------------------------------------------------------------------------
+Examples: "As an AI language model", "I don’t have personal opinions"
+
+1. **Detection Logic:** 
+   - Regex matching against known safety refusal and identity templates.
+   - Patterns: `/\b(as an ai|generated by ai|i do not have personal)\b/i`.
+
+2. **Why AI models trigger this:** 
+   - Hardcoded safety alignments and refusal behaviors in base models (OpenAI, Anthropic, Google).
+
+3. **Why humans may trigger it (edge cases):** 
+   - Quoting AI responses (e.g., writing an article *about* AI).
+
+4. **How ShareSafe mitigates false positives:** 
+   - It doesn't heavily mitigate this, as it's a "Definitve" signal. The text *is* AI text, even if quoted.
+   - Detection triggers a "Red Flag Override".
+
+5. **Signal strength:** 
+   - **Definitive** (Overrides all other statistics to set score >= 85).
+
+--------------------------------------------------------------------------------
+
+5. Template Phrases
+--------------------------------------------------------------------------------
+Examples: "Let’s break this down", "Here are some key points", "Structured lists"
+
+1. **Detection Logic:** 
+   - Detects structural repetition and formulaic setups.
+   - **Repetitive Entrances:** Checks if multiple sentences start with the same words (`uniqueStarts.size < sentences.length * 0.6`).
+   - **List Detection:** Regex `/\b\d+\.\s+[A-Z]/g` identifies densely packed numbered lists in paragraphs.
+
+2. **Why AI models trigger this:** 
+   - Models optimize for clarity and structure, leading to repetitive sentence structures and frequent usage of list formats.
+
+3. **Why humans may trigger it (edge cases):** 
+   - Instructional writing (recipes, tutorials) often uses imperative lists.
+
+4. **How ShareSafe mitigates false positives:** 
+   - Ratios: Uses a ratio of unique sentence starts vs total sentences. Occasional repetition is fine; systematic repetition flags.
+
+5. **Signal strength:** 
+   - **Medium** (Contributes ~8-10 points to score; rarely triggers detection alone).
+
+============================================================================================================================================================
+
+
+1️⃣ AI PHRASES DETECTION
+Code Block
+JavaScript
+
+// Located in: detectAIPatterns(text) function
+
+// ─── Direct AI Mentions ───
+if (/\b(ai[- ]generated|generated by ai|created (by|with) ai)\b/i.test(text)) {
+  pushReason('[AI] Explicitly marked as AI-generated');
+  addScore(90);
+  hasStrongSignal = true;
+}
+
+if (/\b(chatgpt|gpt-4|claude|gemini|copilot) (generated|created|wrote|made)\b/i.test(text)) {
+  pushReason('[AI] Tool authorship indicated');
+  addScore(85);
+  hasStrongSignal = true;
+}
+
+// ─── Common AI Phrases ───
+const aiPhrases = [
+  { pattern: /\b(it'?s worth noting|it'?s important to note)\b/i, score: 15, msg: '[Style] Common AI transitional phrase' },
+  { pattern: /\b(as an ai|as a language model|i don'?t have personal)\b/i, score: 95, msg: '[AI] Self-identification', strong: true },
+  { pattern: /\b(in (conclusion|summary|today'?s|this))\b/i, score: 10, msg: '[Style] Formulaic transitions' },
+  { pattern: /\b(delve|leverage|utilize|facilitate|enhance|optimize)\b/i, score: 12, msg: '[Vocab] Overuse of formal vocabulary' },
+  { pattern: /\b(comprehensive|holistic|robust|seamless|cutting[- ]edge)\b/i, score: 8, msg: '[Vocab] Corporate jargon' },
+  { pattern: /\b(it is (important|crucial|essential|vital) to (note|understand|remember))\b/i, score: 18, msg: '[Style] AI emphasis pattern' },
+  { pattern: /\b(moreover|furthermore|additionally|consequently|therefore)\b/gi, score: 0, count: true, threshold: 3, scoreMulti: 12, msg: '[Style] Excessive formal connectors' },
+  { pattern: /\b(can be (seen|viewed|considered|understood) as)\b/i, score: 10, msg: '[Style] Hedging language' },
+  { pattern: /\b(range of|variety of|number of|series of)\b/gi, score: 0, count: true, threshold: 2, scoreMulti: 8, msg: '[Style] Generic quantifiers' },
+  { pattern: /\b(plays a (crucial|vital|key|important|significant) role)\b/i, score: 14, msg: '[Style] AI cliche phrase' }
+];
+
+aiPhrases.forEach(({ pattern, score: patternScore, msg, strong, count, threshold, scoreMulti }) => {
+  if (count) {
+    const matches = text.match(pattern);
+    if (matches && matches.length >= threshold) {
+      pushReason(`${msg} (${matches.length}×)`);
+      addScore(scoreMulti * Math.min(matches.length, 5));
+    }
+  } else {
+    if (pattern.test(text)) {
+      pushReason(msg);
+      addScore(patternScore);
+      if (strong) hasStrongSignal = true;
+    }
+  }
+});
+Explanation
+text
+
+┌─────────────────────────────────────────────────────────────────┐
+│                    AI PHRASES DETECTION                         │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  WHAT IT DOES:                                                  │
+│  Searches for specific phrases that AI commonly uses            │
+│                                                                 │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                 │
+│  HOW IT WORKS:                                                  │
+│                                                                 │
+│  1. DIRECT AI MENTIONS (Highest Confidence)                     │
+│     ├── "AI-generated" → +90 score                              │
+│     ├── "generated by AI" → +90 score                           │
+│     └── "ChatGPT created" → +85 score                           │
+│                                                                 │
+│  2. AI PHRASES ARRAY (Loop through each)                        │
+│     ├── Single-match patterns (test once)                       │
+│     │   Example: "it's worth noting" → +15 score                │
+│     │                                                           │
+│     └── Count-based patterns (count occurrences)                │
+│         Example: "moreover" 3+ times → +12 × count              │
+│                                                                 │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                 │
+│  PATTERN STRUCTURE:                                             │
+│  {                                                              │
+│    pattern: /regex/,     ← What to search for                   │
+│    score: 15,            ← Points to add if found               │
+│    msg: 'Reason',        ← Explanation for user                 │
+│    strong: true,         ← Marks as definitive signal           │
+│    count: true,          ← Enable counting mode                 │
+│    threshold: 3,         ← Minimum matches needed               │
+│    scoreMulti: 12        ← Points per match                     │
+│  }                                                              │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+Visual Flow
+text
+
+INPUT TEXT: "It's worth noting that this comprehensive guide 
+             leverages cutting-edge technology. Moreover, 
+             furthermore, additionally, it is important to note..."
+
+DETECTION PROCESS:
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                 │
+│  Pattern Check                       │ Found? │ Score Added     │
+│  ────────────────────────────────────┼────────┼────────────────  │
+│  "it's worth noting"                 │ ✅ Yes │ +15             │
+│  "comprehensive"                     │ ✅ Yes │ +8              │
+│  "leverages"                         │ ✅ Yes │ +12             │
+│  "cutting-edge"                      │ ✅ Yes │ +8              │
+│  "moreover/furthermore/additionally" │ ✅ 3×  │ +36 (12×3)      │
+│  "it is important to note"           │ ✅ Yes │ +18             │
+│  ────────────────────────────────────┼────────┼────────────────  │
+│  TOTAL                               │        │ +97             │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+2️⃣ MARKDOWN ARTIFACTS DETECTION
+Code Block
+JavaScript
+
+// Located in: detectHighCertaintyPatterns(text) function
+
+// 3. Copy-Paste Artifacts (Markdown bolding of headers/lists in short text)
+// E.g. "**Conclusion**" or "**Step 1:**" or "1. Point"
+if (text.length < 200) {
+  if (/\*\*(.*?)\*\*/.test(text) && (text.match(/\*\*/g) || []).length >= 2) {
+    reasons.push('Heavy markdown usage characteristic of AI');
+  }
+  // Numbered lists in short text (e.g. "1. Plan 2. Execute")
+  if (/\b\d+\.\s+[A-Z]/.test(text) && (text.match(/\d+\.\s+/g) || []).length >= 2) {
+    reasons.push('Numbered list in short text');
+  }
+}
+Additional Related Code in detectAIPatterns
+JavaScript
+
+// Located in: detectAIPatterns(text) function
+
+// Check for numbered lists in paragraphs (AI loves numbered lists)
+const numberedPoints = text.match(/\b\d+\.\s+[A-Z]/g);
+if (numberedPoints && numberedPoints.length >= 3) {
+  pushReason('Structured list format');
+  addScore(8);
+}
+Explanation
+text
+
+┌─────────────────────────────────────────────────────────────────┐
+│                    MARKDOWN ARTIFACTS DETECTION                 │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  WHAT IT DOES:                                                  │
+│  Detects leftover markdown formatting from AI copy-paste        │
+│                                                                 │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                 │
+│  PATTERNS DETECTED:                                             │
+│                                                                 │
+│  1. BOLD MARKDOWN (**)                                          │
+│     Pattern: /\*\*(.*?)\*\*/                                    │
+│     Matches: "**Conclusion**", "**Important**"                  │
+│     Condition: At least 2 ** pairs in text < 200 chars          │
+│                                                                 │
+│  2. NUMBERED LISTS                                              │
+│     Pattern: /\b\d+\.\s+[A-Z]/                                  │
+│     Matches: "1. First point", "2. Second point"                │
+│     Condition: At least 2 numbered items found                  │
+│                                                                 │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                 │
+│  WHY SHORT TEXT ONLY (<200 chars)?                              │
+│  • Long text with markdown might be intentional                 │
+│  • Short text with markdown = likely copy-paste artifact        │
+│  • Reduces false positives                                      │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+Visual Flow
+text
+
+INPUT TEXT: "**Quick Tips:**
+             1. Always plan ahead
+             2. Stay organized
+             3. Review your work"
+
+(Length: ~70 characters = SHORT TEXT)
+
+DETECTION PROCESS:
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                 │
+│  CHECK 1: Is text < 200 characters?                             │
+│           70 < 200 → ✅ YES                                     │
+│                                                                 │
+│  CHECK 2: Bold markdown (**)?                                   │
+│           "**Quick Tips:**" found                               │
+│           ** count = 2 (opening + closing)                      │
+│           2 >= 2 → ✅ YES                                       │
+│           → Add reason: "Heavy markdown usage..."               │
+│                                                                 │
+│  CHECK 3: Numbered lists?                                       │
+│           "1. Always" found                                     │
+│           "2. Stay" found                                       │
+│           "3. Review" found                                     │
+│           Count = 3 >= 2 → ✅ YES                               │
+│           → Add reason: "Numbered list in short text"           │
+│                                                                 │
+│  RESULT: 2 markdown artifacts detected = RED FLAG               │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+3️⃣ TERMINAL EMOJIS DETECTION
+Code Block
+JavaScript
+
+// Located in: detectHighCertaintyPatterns(text) function
+
+// 1. Terminal Emoji Patterns (e.g. "Here it is! 🚀")
+// Check for emoji in the last 5 chars of the string
+if (/[\u{1F300}-\u{1FAFF}][^a-zA-Z0-9]*$/u.test(text)) {
+  reasons.push('AI-style terminal emoji');
+}
+Explanation
+text
+
+┌─────────────────────────────────────────────────────────────────┐
+│                    TERMINAL EMOJI DETECTION                     │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  WHAT IT DOES:                                                  │
+│  Detects emojis placed at the END of text (AI habit)            │
+│                                                                 │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                 │
+│  THE REGEX EXPLAINED:                                           │
+│                                                                 │
+│  /[\u{1F300}-\u{1FAFF}][^a-zA-Z0-9]*$/u                         │
+│   │                    │             │ │                        │
+│   │                    │             │ └── Unicode flag         │
+│   │                    │             └──── End of string        │
+│   │                    └──── No letters/numbers after emoji     │
+│   └──── Emoji unicode range (🌀 to 🪿)                          │
+│                                                                 │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                 │
+│  EXAMPLES:                                                      │
+│                                                                 │
+│  ✅ DETECTED (Terminal Emoji):                                  │
+│     "Hope this helps! 😊"                                       │
+│     "Great job! 🎉"                                             │
+│     "Here's the answer 🚀"                                      │
+│     "Thanks! ✨💡"                                               │
+│                                                                 │
+│  ❌ NOT DETECTED (Mid-sentence):                                │
+│     "I 😊 really liked it"                                      │
+│     "The 🚀 launch was great today"                             │
+│     "So 😂 funny omg"                                           │
+│                                                                 │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                 │
+│  WHY THIS MATTERS:                                              │
+│  • AI tends to place emojis at the END of messages              │
+│  • Humans scatter emojis throughout text                        │
+│  • Terminal emoji = AI writing signature                        │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+Visual Flow
+text
+
+INPUT TEXT: "Thanks for your question! I hope this helps! 😊"
+
+DETECTION PROCESS:
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                 │
+│  TEXT: "Thanks for your question! I hope this helps! 😊"       │
+│                                                        ↑↑       │
+│                                                   Last chars    │
+│                                                                 │
+│  REGEX CHECK:                                                   │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │ Pattern: [\u{1F300}-\u{1FAFF}][^a-zA-Z0-9]*$              │  │
+│  │                                                           │  │
+│  │ Step 1: Find emoji at position                            │  │
+│  │         😊 is at index (end - 1) ✅                       │  │
+│  │                                                           │  │
+│  │ Step 2: Check what follows emoji                          │  │
+│  │         Nothing follows (end of string) ✅                │  │
+│  │                                                           │  │
+│  │ Step 3: Pattern matches!                                  │  │
+│  │         → "AI-style terminal emoji" added to reasons      │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  RESULT: Terminal emoji detected = RED FLAG                     │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+4️⃣ SELF-DISCLOSURE DETECTION
+Code Block (Part 1: In detectAIPatterns)
+JavaScript
+
+// Located in: detectAIPatterns(text) function
+// Inside the aiPhrases array
+
+{ 
+  pattern: /\b(as an ai|as a language model|i don'?t have personal)\b/i, 
+  score: 95, 
+  msg: '[AI] Self-identification', 
+  strong: true 
+}
+Code Block (Part 2: In detectHighCertaintyPatterns)
+JavaScript
+
+// Located in: detectHighCertaintyPatterns(text) function
+
+// 2. Explicit AI Self-Disclosure
+if (/\b(as an ai|as a large language model|i do not have personal)\b/i.test(text)) {
+  reasons.push('Explicit AI self-disclosure');
+}
+Explanation
+text
+
+┌─────────────────────────────────────────────────────────────────┐
+│                    SELF-DISCLOSURE DETECTION                    │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  WHAT IT DOES:                                                  │
+│  Detects when AI reveals its nature or limitations              │
+│                                                                 │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                 │
+│  PATTERNS DETECTED:                                             │
+│                                                                 │
+│  LOCATION 1: aiPhrases array (detectAIPatterns)                 │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │ Pattern: /\b(as an ai|as a language model|                │  │
+│  │             i don'?t have personal)\b/i                   │  │
+│  │                                                           │  │
+│  │ Matches:                                                  │  │
+│  │ • "As an AI..."                                           │  │
+│  │ • "As a language model..."                                │  │
+│  │ • "I don't have personal experiences"                     │  │
+│  │ • "I dont have personal feelings"                         │  │
+│  │                                                           │  │
+│  │ Score: 95 (Very High)                                     │  │
+│  │ Strong Signal: true (Definitive AI marker)                │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  LOCATION 2: detectHighCertaintyPatterns (Red Flag)             │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │ Pattern: /\b(as an ai|as a large language model|          │  │
+│  │             i do not have personal)\b/i                   │  │
+│  │                                                           │  │
+│  │ Matches:                                                  │  │
+│  │ • "As an AI..."                                           │  │
+│  │ • "As a large language model..."                          │  │
+│  │ • "I do not have personal opinions"                       │  │
+│  │                                                           │  │
+│  │ Result: Adds to Red Flag reasons                          │  │
+│  │ Used for: Short text override                             │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                 │
+│  WHY TWO LOCATIONS?                                             │
+│  • aiPhrases: Adds score (+95) to overall calculation           │
+│  • HighCertainty: Triggers RED FLAG override for short text     │
+│  • Both ensure self-disclosure is never missed                  │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+Visual Flow
+text
+
+INPUT TEXT: "As an AI language model, I don't have personal 
+             feelings or experiences. However, I can help..."
+
+DETECTION PROCESS:
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                 │
+│  STEP 1: detectAIPatterns() checks                              │
+│  ─────────────────────────────────────────────────────────────  │
+│  Pattern: /\b(as an ai|as a language model|i don'?t have...)/   │
+│                                                                 │
+│  "As an AI language model" → ✅ MATCH                           │
+│   └── Add reason: "[AI] Self-identification"                    │
+│   └── Add score: +95                                            │
+│   └── Set hasStrongSignal = true                                │
+│                                                                 │
+│  "I don't have personal feelings" → ✅ MATCH                    │
+│   └── Already matched (same pattern catches both)               │
+│                                                                 │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                 │
+│  STEP 2: detectHighCertaintyPatterns() checks                   │
+│  ─────────────────────────────────────────────────────────────  │
+│  Pattern: /\b(as an ai|as a large language model|...)/          │
+│                                                                 │
+│  "As an AI" → ✅ MATCH                                          │
+│   └── Add reason: "Explicit AI self-disclosure"                 │
+│   └── RED FLAG: detected = true                                 │
+│                                                                 │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                 │
+│  RESULT: DEFINITIVE AI DETECTION                                │
+│  • Score: +95                                                   │
+│  • Strong Signal: true                                          │
+│  • Red Flag: true                                               │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+5️⃣ TEMPLATE PHRASES DETECTION
+Code Block
+JavaScript
+
+// Located in: detectHighCertaintyPatterns(text) function
+
+// 4. Common AI Phrases (High Certainty)
+// "It is important to note", "In conclusion", "Quick tips", "Brief summary"
+const phrasePatterns = [
+  /\b(it is|it's) (important|crucial|essential) to (note|remember|understand)\b/i,
+  /\b(worth noting|notable) that\b/i,
+  /\b(in conclusion|to conclude|to summarize)\b/i,
+  /\b(quick (tips|summary|notes?)|brief (summary|overview))\b/i,
+  /\b(hope (this|that) helps)\b/i
+];
+
+for (const pattern of phrasePatterns) {
+  if (pattern.test(text)) {
+    reasons.push('High-certainty AI phrase');
+    break; // One is enough to trigger red flag
+  }
+}
+Additional Template-like Patterns in aiPhrases
+JavaScript
+
+// Located in: detectAIPatterns(text) function
+// Inside the aiPhrases array
+
+// These are also template-like patterns:
+{ pattern: /\b(it'?s worth noting|it'?s important to note)\b/i, score: 15, msg: '[Style] Common AI transitional phrase' },
+{ pattern: /\b(in (conclusion|summary|today'?s|this))\b/i, score: 10, msg: '[Style] Formulaic transitions' },
+{ pattern: /\b(it is (important|crucial|essential|vital) to (note|understand|remember))\b/i, score: 18, msg: '[Style] AI emphasis pattern' },
+Explanation
+text
+
+┌─────────────────────────────────────────────────────────────────┐
+│                    TEMPLATE PHRASES DETECTION                   │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  WHAT IT DOES:                                                  │
+│  Detects formulaic/template phrases AI repeatedly uses          │
+│                                                                 │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                 │
+│  PHRASES DETECTED (High Certainty):                             │
+│                                                                 │
+│  1. EMPHASIS TEMPLATES                                          │
+│     ┌─────────────────────────────────────────────────────────┐ │
+│     │ Pattern: /\b(it is|it's) (important|crucial|essential)  │ │
+│     │          to (note|remember|understand)\b/i              │ │
+│     │                                                         │ │
+│     │ Matches:                                                │ │
+│     │ • "It is important to note that..."                     │ │
+│     │ • "It's crucial to understand..."                       │ │
+│     │ • "It is essential to remember..."                      │ │
+│     └─────────────────────────────────────────────────────────┘ │
+│                                                                 │
+│  2. NOTATION TEMPLATES                                          │
+│     ┌─────────────────────────────────────────────────────────┐ │
+│     │ Pattern: /\b(worth noting|notable) that\b/i             │ │
+│     │                                                         │ │
+│     │ Matches:                                                │ │
+│     │ • "It's worth noting that..."                           │ │
+│     │ • "Notable that..."                                     │ │
+│     └─────────────────────────────────────────────────────────┘ │
+│                                                                 │
+│  3. CONCLUSION TEMPLATES                                        │
+│     ┌─────────────────────────────────────────────────────────┐ │
+│     │ Pattern: /\b(in conclusion|to conclude|to summarize)\b/ │ │
+│     │                                                         │ │
+│     │ Matches:                                                │ │
+│     │ • "In conclusion..."                                    │ │
+│     │ • "To conclude..."                                      │ │
+│     │ • "To summarize..."                                     │ │
+│     └─────────────────────────────────────────────────────────┘ │
+│                                                                 │
+│  4. SUMMARY TEMPLATES                                           │
+│     ┌─────────────────────────────────────────────────────────┐ │
+│     │ Pattern: /\b(quick (tips|summary|notes?)|               │ │
+│     │          brief (summary|overview))\b/i                  │ │
+│     │                                                         │ │
+│     │ Matches:                                                │ │
+│     │ • "Quick tips:"                                         │ │
+│     │ • "Quick summary"                                       │ │
+│     │ • "Brief overview"                                      │ │
+│     └─────────────────────────────────────────────────────────┘ │
+│                                                                 │
+│  5. CLOSING TEMPLATES                                           │
+│     ┌─────────────────────────────────────────────────────────┐ │
+│     │ Pattern: /\b(hope (this|that) helps)\b/i                │ │
+│     │                                                         │ │
+│     │ Matches:                                                │ │
+│     │ • "Hope this helps!"                                    │ │
+│     │ • "Hope that helps!"                                    │ │
+│     └─────────────────────────────────────────────────────────┘ │
+│                                                                 │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                 │
+│  IMPORTANT: "break" after first match                           │
+│  • Only ONE template phrase triggers red flag                   │
+│  • Prevents over-counting                                       │
+│  • One is enough evidence                                       │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+Visual Flow
+text
+
+INPUT TEXT: "It is important to note that there are several 
+             factors. In conclusion, hope this helps!"
+
+DETECTION PROCESS:
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                 │
+│  CHECK EACH PATTERN:                                            │
+│                                                                 │
+│  Pattern 1: /\b(it is|it's) (important|crucial|essential)       │
+│             to (note|remember|understand)\b/i                   │
+│                                                                 │
+│     "It is important to note" → ✅ MATCH!                       │
+│                                                                 │
+│     → Add reason: "High-certainty AI phrase"                    │
+│     → BREAK (stop checking more patterns)                       │
+│                                                                 │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                 │
+│  NOTE: "In conclusion" and "hope this helps" are also           │
+│  present but NOT checked because we already found one match     │
+│  and used "break" to exit the loop.                             │
+│                                                                 │
+│  This prevents the same text from getting 3 red flags           │
+│  when 1 is enough.                                              │
+│                                                                 │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                 │
+│  RESULT: Template phrase detected = RED FLAG                    │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+📊 COMPLETE SUMMARY TABLE
+text
+
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                         PATTERN DETECTION SUMMARY                              │
+├────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                │
+│  ELEMENT           │ FUNCTION                    │ SCORE     │ EFFECT         │
+│  ──────────────────┼─────────────────────────────┼───────────┼───────────────  │
+│  AI Phrases        │ detectAIPatterns()          │ 8-95      │ Adds to score  │
+│                    │ └── aiPhrases array         │           │ + reasons      │
+│                    │                             │           │                │
+│  Markdown          │ detectHighCertaintyPatterns │ N/A       │ RED FLAG       │
+│  Artifacts         │ └── Short text only (<200)  │           │ override       │
+│                    │                             │           │                │
+│  Terminal          │ detectHighCertaintyPatterns │ N/A       │ RED FLAG       │
+│  Emojis            │ └── Emoji at end check      │           │ override       │
+│                    │                             │           │                │
+│  Self-Disclosure   │ BOTH functions              │ 95        │ Highest score  │
+│                    │ ├── aiPhrases (score)       │           │ + RED FLAG     │
+│                    │ └── HighCertainty (flag)    │           │                │
+│                    │                             │           │                │
+│  Template          │ detectHighCertaintyPatterns │ N/A       │ RED FLAG       │
+│  Phrases           │ └── phrasePatterns array    │           │ override       │
+│                                                                                │
+└────────────────────────────────────────────────────────────────────────────────┘
+🔄 HOW THEY WORK TOGETHER
+text
+
+                            INPUT TEXT
+                                │
+                                ▼
+┌───────────────────────────────────────────────────────────────┐
+│                    detectAIPatterns(text)                     │
+│                                                               │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌───────────────┐  │
+│  │  AI Phrases     │  │ Self-Disclosure │  │  Structure    │  │
+│  │  Detection      │  │  (Score: +95)   │  │  Patterns     │  │
+│  │  (Score: 8-95)  │  │                 │  │  (Score: 8-14)│  │
+│  └────────┬────────┘  └────────┬────────┘  └───────┬───────┘  │
+│           │                    │                   │          │
+│           └────────────────────┼───────────────────┘          │
+│                                │                              │
+│                                ▼                              │
+│                    RETURNS: { score, reasons,                 │
+│                               hasStrongSignal }               │
+└───────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌───────────────────────────────────────────────────────────────┐
+│               detectHighCertaintyPatterns(text)               │
+│                                                               │
+│  ┌─────────────┐  ┌──────────────┐  ┌─────────────────────┐   │
+│  │  Terminal   │  │  Self-       │  │  Markdown           │   │
+│  │  Emojis     │  │  Disclosure  │  │  Artifacts          │   │
+│  └──────┬──────┘  └──────┬───────┘  └──────────┬──────────┘   │
+│         │                │                     │              │
+│         │     ┌──────────┴──────────┐          │              │
+│         │     │  Template Phrases   │          │              │
+│         │     └──────────┬──────────┘          │              │
+│         │                │                     │              │
+│         └────────────────┼─────────────────────┘              │
+│                          │                                    │
+│                          ▼                                    │
+│              RETURNS: { detected: true/false,                 │
+│                         reasons: [...] }                      │
+└───────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌───────────────────────────────────────────────────────────────┐
+│                    scoreSegment() combines:                   │
+│                                                               │
+│  • Statistical score (from statisticalAnalyzer.js)            │
+│  • Pattern score (from detectAIPatterns)                      │
+│  • Red flags (from detectHighCertaintyPatterns)               │
+│                                                               │
+│  SHORT TEXT (<50 words):                                      │
+│    If redFlags.detected → Force high score (85+)              │
+│    Else → 40% statistical + 60% pattern                       │
+│                                                               │
+│  LONG TEXT (50+ words):                                       │
+│    75% statistical + 25% pattern                              │
+│                                                               │
+│                          ▼                                    │
+│              FINAL SCORE (0-100)                              │
+└───────────────────────────────────────────────────────────────┘
+
+======================================================================================================================================================================
+
+ OVERVIEW: Statistical Features Location
+text
+
+┌─────────────────────────────────────────────────────────────────┐
+│                    STATISTICAL ANALYZER STRUCTURE               │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  CORE FEATURES (You Asked About):                               │
+│  ├── 1. Sentence Variance     → analyzeSentences()              │
+│  ├── 2. Token Entropy         → calculateTokenEntropy()         │
+│  ├── 3. N-gram Repetition     → analyzeNgramRepetition()        │
+│  ├── 4. Lexical Diversity     → calculateLexicalDiversity()     │
+│  └── 5. Transition Density    → calculateTransitionDensity()    │
+│                                                                 │
+│  ADDITIONAL FEATURES:                                           │
+│  ├── Readability Score        → calculateReadability()          │
+│  ├── POS Regularity           → analyzePOSRegularity()          │
+│  ├── Punctuation Analysis     → analyzePunctuation()            │
+│  ├── Burstiness               → calculateBurstiness()           │
+│  ├── Stopword Ratio           → calculateStopwordRatio()        │
+│  ├── Function Word Uniformity → calculateFunctionWordUniformity()│
+│  ├── Filler Ratio             → calculateFillerRatio()          │
+│  ├── Emoji Habits             → checkEmojiHabits()              │
+│  ├── Entropy Volatility       → calculateEntropyVolatility()    │
+│  └── Copy-Paste Artifacts     → detectCopyPasteArtifacts()      │
+│                                                                 │
+│  MAIN FUNCTION:                                                 │
+│  └── analyzeTextStatistics()  → Combines all features           │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+1️⃣ SENTENCE VARIANCE
+Code Block
+JavaScript
+
+// ═══════════════════════════════════════════════════════════════
+// SENTENCE ANALYSIS
+// ═══════════════════════════════════════════════════════════════
+
+function analyzeSentences(text) {
+  // Split into sentences (handle multiple punctuation patterns)
+  const sentences = text
+    .split(/[.!?]+/)
+    .map(s => s.trim())
+    .filter(s => s.length > 0);
+
+  if (sentences.length === 0) return { mean: 0, variance: 0, count: 0 };
+
+  const lengths = sentences.map(s => s.split(/\s+/).length);
+  const mean = lengths.reduce((a, b) => a + b, 0) / lengths.length;
+
+  // Calculate variance
+  const variance = lengths.reduce((sum, len) => sum + Math.pow(len - mean, 2), 0) / lengths.length;
+
+  return {
+    mean,
+    variance,
+    stdDev: Math.sqrt(variance),
+    count: sentences.length,
+    minLength: Math.min(...lengths),
+    maxLength: Math.max(...lengths),
+    lengths
+  };
+}
+How It's Used in Main Function
+JavaScript
+
+// In analyzeTextStatistics():
+const sentences = analyzeSentences(text);
+
+// Normalization:
+const normalizedFeatures = {
+  sentenceLengthVariance: normalizeFeature(sentences.variance, HUMAN_BASELINES.sentenceLengthVariance),
+  sentenceLengthMean: normalizeFeature(sentences.mean, HUMAN_BASELINES.sentenceLengthMean),
+  // ...
+};
+
+// Generating reasons:
+if (normalizedFeatures.sentenceLengthVariance > threshold) {
+  if (sentences.variance < HUMAN_BASELINES.sentenceLengthVariance.mean * 0.5) {
+    reasons.push('Unusually uniform sentence lengths');
+  } else {
+    reasons.push('Highly variable sentence structure');
+  }
+}
+Human Baseline
+JavaScript
+
+const HUMAN_BASELINES = {
+  sentenceLengthMean: { mean: 18, stdDev: 6 },
+  sentenceLengthVariance: { mean: 45, stdDev: 25 },
+  // ...
+};
+Explanation
+text
+
+┌─────────────────────────────────────────────────────────────────┐
+│                    SENTENCE VARIANCE ANALYSIS                   │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  WHAT IT MEASURES:                                              │
+│  How much sentence lengths DIFFER from each other               │
+│                                                                 │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                 │
+│  WHY IT MATTERS:                                                │
+│  • AI writes sentences of SIMILAR lengths (low variance)        │
+│  • Humans write sentences of VARIED lengths (high variance)     │
+│                                                                 │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                 │
+│  STEP-BY-STEP LOGIC:                                            │
+│                                                                 │
+│  STEP 1: Split text into sentences                              │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │ Input:  "I love coding. It is fun! Really?"               │  │
+│  │ Regex:  text.split(/[.!?]+/)                              │  │
+│  │ Output: ["I love coding", "It is fun", "Really"]          │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  STEP 2: Count words in each sentence                           │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │ "I love coding"  → 3 words                                │  │
+│  │ "It is fun"      → 3 words                                │  │
+│  │ "Really"         → 1 word                                 │  │
+│  │                                                           │  │
+│  │ lengths = [3, 3, 1]                                       │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  STEP 3: Calculate mean (average)                               │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │ Formula: sum / count                                      │  │
+│  │ (3 + 3 + 1) / 3 = 7/3 = 2.33                              │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  STEP 4: Calculate variance                                     │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │ Formula: Σ(length - mean)² / count                        │  │
+│  │                                                           │  │
+│  │ (3 - 2.33)² = 0.45                                        │  │
+│  │ (3 - 2.33)² = 0.45                                        │  │
+│  │ (1 - 2.33)² = 1.77                                        │  │
+│  │                                                           │  │
+│  │ Variance = (0.45 + 0.45 + 1.77) / 3 = 0.89                │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  STEP 5: Calculate standard deviation                           │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │ stdDev = √variance = √0.89 = 0.94                         │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+Visual: Low vs High Variance
+text
+
+LOW VARIANCE (AI-like):
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                 │
+│  Sentence 1: ████████████████ (16 words)                        │
+│  Sentence 2: ███████████████  (15 words)                        │
+│  Sentence 3: █████████████████ (17 words)                       │
+│  Sentence 4: ████████████████ (16 words)                        │
+│                                                                 │
+│  Mean: 16 words                                                 │
+│  Variance: ~0.5 (very low) 🚨                                   │
+│  All sentences nearly same length = AI SIGNAL                   │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+
+HIGH VARIANCE (Human-like):
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                 │
+│  Sentence 1: ████ (4 words)                                     │
+│  Sentence 2: ██████████████████████████████ (30 words)          │
+│  Sentence 3: ██ (2 words)                                       │
+│  Sentence 4: ████████████████████ (20 words)                    │
+│                                                                 │
+│  Mean: 14 words                                                 │
+│  Variance: ~120 (very high) ✅                                  │
+│  Sentences vary wildly = HUMAN SIGNAL                           │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+What It Returns
+JavaScript
+
+{
+  mean: 2.33,              // Average sentence length
+  variance: 0.89,          // How spread out lengths are
+  stdDev: 0.94,            // Square root of variance
+  count: 3,                // Number of sentences
+  minLength: 1,            // Shortest sentence
+  maxLength: 3,            // Longest sentence
+  lengths: [3, 3, 1]       // Array of all lengths
+}
+2️⃣ TOKEN ENTROPY
+Code Block
+JavaScript
+
+// ═══════════════════════════════════════════════════════════════
+// TOKEN ENTROPY (Measures predictability)
+// ═══════════════════════════════════════════════════════════════
+
+function calculateTokenEntropy(text) {
+  const tokens = text.toLowerCase()
+    .replace(/[^\w\s]/g, ' ')
+    .split(/\s+/)
+    .filter(t => t.length > 0);
+
+  if (tokens.length === 0) return 0;
+
+  // Count token frequencies
+  const frequencies = {};
+  tokens.forEach(token => {
+    frequencies[token] = (frequencies[token] || 0) + 1;
+  });
+
+  // Calculate Shannon entropy
+  const totalTokens = tokens.length;
+  let entropy = 0;
+
+  Object.values(frequencies).forEach(count => {
+    const probability = count / totalTokens;
+    entropy -= probability * Math.log2(probability);
+  });
+
+  return entropy;
+}
+How It's Used in Main Function
+JavaScript
+
+// In analyzeTextStatistics():
+const entropy = calculateTokenEntropy(text);
+
+// Normalization:
+const normalizedFeatures = {
+  tokenEntropy: normalizeFeature(entropy, baselines.tokenEntropy || HUMAN_BASELINES.tokenEntropy),
+  // ...
+};
+
+// Entropy floor for short texts:
+if (lexical && typeof lexical.uniqueWords === 'number' && lexical.uniqueWords < 10) {
+  normalizedFeatures.tokenEntropy = 0;
+}
+
+// Generating reasons:
+if (normalizedFeatures.tokenEntropy > threshold) {
+  if (entropy < HUMAN_BASELINES.tokenEntropy.mean) {
+    reasons.push('Predictable word patterns');
+  } else {
+    reasons.push('Unusually random word distribution');
+  }
+}
+Human Baseline
+JavaScript
+
+const HUMAN_BASELINES = {
+  tokenEntropy: { mean: 8.5, stdDev: 1.5 },
+  // ...
+};
+Explanation
+text
+
+┌─────────────────────────────────────────────────────────────────┐
+│                    TOKEN ENTROPY ANALYSIS                       │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  WHAT IT MEASURES:                                              │
+│  How RANDOM or PREDICTABLE word choices are                     │
+│  Based on Shannon's Information Theory                          │
+│                                                                 │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                 │
+│  WHY IT MATTERS:                                                │
+│  • AI uses PREDICTABLE word patterns (low entropy)              │
+│  • Humans use more VARIED vocabulary (high entropy)             │
+│                                                                 │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                 │
+│  STEP-BY-STEP LOGIC:                                            │
+│                                                                 │
+│  STEP 1: Tokenize text (extract words)                          │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │ Input:  "The cat sat on the mat. The cat slept."          │  │
+│  │                                                           │  │
+│  │ .toLowerCase()                                            │  │
+│  │ → "the cat sat on the mat. the cat slept."                │  │
+│  │                                                           │  │
+│  │ .replace(/[^\w\s]/g, ' ')                                 │  │
+│  │ → "the cat sat on the mat  the cat slept "                │  │
+│  │                                                           │  │
+│  │ .split(/\s+/).filter(t => t.length > 0)                   │  │
+│  │ → ["the", "cat", "sat", "on", "the", "mat",               │  │
+│  │    "the", "cat", "slept"]                                 │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  STEP 2: Count frequency of each token                          │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │ frequencies = {                                           │  │
+│  │   "the":   3,                                             │  │
+│  │   "cat":   2,                                             │  │
+│  │   "sat":   1,                                             │  │
+│  │   "on":    1,                                             │  │
+│  │   "mat":   1,                                             │  │
+│  │   "slept": 1                                              │  │
+│  │ }                                                         │  │
+│  │                                                           │  │
+│  │ Total tokens: 9                                           │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  STEP 3: Calculate probability of each token                    │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │ probability = count / totalTokens                         │  │
+│  │                                                           │  │
+│  │ "the":   3/9 = 0.333                                      │  │
+│  │ "cat":   2/9 = 0.222                                      │  │
+│  │ "sat":   1/9 = 0.111                                      │  │
+│  │ "on":    1/9 = 0.111                                      │  │
+│  │ "mat":   1/9 = 0.111                                      │  │
+│  │ "slept": 1/9 = 0.111                                      │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  STEP 4: Apply Shannon Entropy Formula                          │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │ Formula: H = -Σ(p × log₂(p))                              │  │
+│  │                                                           │  │
+│  │ For each token:                                           │  │
+│  │   entropy -= probability * Math.log2(probability)         │  │
+│  │                                                           │  │
+│  │ "the":   -0.333 × log₂(0.333) = -0.333 × (-1.58) = 0.53  │  │
+│  │ "cat":   -0.222 × log₂(0.222) = -0.222 × (-2.17) = 0.48  │  │
+│  │ "sat":   -0.111 × log₂(0.111) = -0.111 × (-3.17) = 0.35  │  │
+│  │ "on":    -0.111 × log₂(0.111) = 0.35                      │  │
+│  │ "mat":   -0.111 × log₂(0.111) = 0.35                      │  │
+│  │ "slept": -0.111 × log₂(0.111) = 0.35                      │  │
+│  │                                                           │  │
+│  │ Total Entropy = 0.53 + 0.48 + 0.35×4 = 2.41 bits          │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+Visual: Entropy Concept
+text
+
+ENTROPY SCALE:
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                 │
+│  0 bits ◄──────────────────────────────────────────► ∞ bits     │
+│                                                                 │
+│  LOW ENTROPY                                      HIGH ENTROPY  │
+│  (Predictable)                                    (Random)      │
+│                                                                 │
+│     🤖 AI                                           👤 Human    │
+│                                                                 │
+│  Example:                            Example:                   │
+│  "the the the the"                   "cat dog bird fish"        │
+│  (only 1 unique word)                (all unique words)         │
+│  Entropy ≈ 0 bits                    Entropy ≈ 2 bits           │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+
+LOW ENTROPY TEXT (AI-like):
+┌─────────────────────────────────────────────────────────────────┐
+│  "The system is important. The system works well.               │
+│   The system helps users. The system is reliable."              │
+│                                                                 │
+│  Token frequencies:                                             │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │  THE ████████████████ (4×)                               │   │
+│  │  SYSTEM ████████████████ (4×)                            │   │
+│  │  IS ████████ (2×)                                        │   │
+│  │  other words █ (1× each)                                 │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  Many repeated words = LOW ENTROPY = PREDICTABLE 🚨             │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+
+HIGH ENTROPY TEXT (Human-like):
+┌─────────────────────────────────────────────────────────────────┐
+│  "My golden retriever loves chasing squirrels through           │
+│   the backyard during autumn mornings."                         │
+│                                                                 │
+│  Token frequencies:                                             │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │  my █ (1×)                                               │   │
+│  │  golden █ (1×)                                           │   │
+│  │  retriever █ (1×)                                        │   │
+│  │  loves █ (1×)                                            │   │
+│  │  chasing █ (1×)                                          │   │
+│  │  ... all unique!                                         │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  All unique words = HIGH ENTROPY = UNPREDICTABLE ✅             │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+What It Returns
+JavaScript
+
+// Returns a single number (entropy in bits)
+return entropy;  // e.g., 2.41
+
+// Higher = more random/varied (human-like)
+// Lower = more predictable/repetitive (AI-like)
+3️⃣ N-GRAM REPETITION
+Code Block
+JavaScript
+
+// ═══════════════════════════════════════════════════════════════
+// N-GRAM REPETITION RATE
+// ═══════════════════════════════════════════════════════════════
+
+function analyzeNgramRepetition(text, n = 3) {
+  const words = text.toLowerCase()
+    .replace(/[^\w\s]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length > 0);
+
+  if (words.length < n) return { repetitionRate: 0, uniqueRatio: 1 };
+
+  const ngrams = [];
+  for (let i = 0; i <= words.length - n; i++) {
+    ngrams.push(words.slice(i, i + n).join(' '));
+  }
+
+  const uniqueNgrams = new Set(ngrams);
+  const repetitionRate = 1 - (uniqueNgrams.size / ngrams.length);
+
+  // Find most repeated n-grams
+  const ngramCounts = {};
+  ngrams.forEach(ng => {
+    ngramCounts[ng] = (ngramCounts[ng] || 0) + 1;
+  });
+
+  const repeated = Object.entries(ngramCounts)
+    .filter(([_, count]) => count > 1)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5);
+
+  return {
+    repetitionRate,
+    uniqueRatio: uniqueNgrams.size / ngrams.length,
+    totalNgrams: ngrams.length,
+    uniqueNgrams: uniqueNgrams.size,
+    mostRepeated: repeated
+  };
+}
+How It's Used in Main Function
+JavaScript
+
+// In analyzeTextStatistics():
+const ngrams = analyzeNgramRepetition(text, 3);  // Using trigrams (n=3)
+
+// Normalization:
+const normalizedFeatures = {
+  ngramRepetition: normalizeFeature(ngrams.repetitionRate, HUMAN_BASELINES.ngramRepetition),
+  // ...
+};
+
+// Generating reasons:
+if (normalizedFeatures.ngramRepetition > threshold) {
+  reasons.push(`Repetitive phrasing (${(ngrams.repetitionRate * 100).toFixed(0)}% repeated)`);
+}
+Human Baseline
+JavaScript
+
+const HUMAN_BASELINES = {
+  ngramRepetition: { mean: 0.15, stdDev: 0.1 },
+  // ...
+};
+Explanation
+text
+
+┌─────────────────────────────────────────────────────────────────┐
+│                    N-GRAM REPETITION ANALYSIS                   │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  WHAT IT MEASURES:                                              │
+│  How often CONSECUTIVE WORD SEQUENCES repeat in text            │
+│                                                                 │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                 │
+│  WHAT IS AN N-GRAM?                                             │
+│  • N-gram = sequence of N consecutive words                     │
+│  • Unigram (n=1): "the", "cat", "sat"                           │
+│  • Bigram (n=2):  "the cat", "cat sat"                          │
+│  • Trigram (n=3): "the cat sat", "cat sat on"                   │
+│                                                                 │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                 │
+│  WHY IT MATTERS:                                                │
+│  • AI often REPEATS similar phrase patterns                     │
+│  • Humans naturally VARY their phrasing                         │
+│                                                                 │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                 │
+│  STEP-BY-STEP LOGIC:                                            │
+│                                                                 │
+│  STEP 1: Extract words                                          │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │ Input: "The cat sat on the mat. The cat slept."           │  │
+│  │                                                           │  │
+│  │ words = ["the", "cat", "sat", "on", "the", "mat",         │  │
+│  │          "the", "cat", "slept"]                           │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  STEP 2: Create n-grams (n=3, trigrams)                         │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │ Sliding window of 3 words:                                │  │
+│  │                                                           │  │
+│  │ Position 0: [the, cat, sat]    → "the cat sat"            │  │
+│  │ Position 1: [cat, sat, on]     → "cat sat on"             │  │
+│  │ Position 2: [sat, on, the]     → "sat on the"             │  │
+│  │ Position 3: [on, the, mat]     → "on the mat"             │  │
+│  │ Position 4: [the, mat, the]    → "the mat the"            │  │
+│  │ Position 5: [mat, the, cat]    → "mat the cat"            │  │
+│  │ Position 6: [the, cat, slept]  → "the cat slept"          │  │
+│  │                                                           │  │
+│  │ Total: 7 trigrams                                         │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  STEP 3: Find unique n-grams                                    │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │ uniqueNgrams = Set of all trigrams                        │  │
+│  │                                                           │  │
+│  │ All 7 trigrams are unique in this example                 │  │
+│  │ Unique count: 7                                           │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  STEP 4: Calculate repetition rate                              │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │ Formula: repetitionRate = 1 - (unique / total)            │  │
+│  │                                                           │  │
+│  │ repetitionRate = 1 - (7 / 7) = 1 - 1 = 0                  │  │
+│  │                                                           │  │
+│  │ 0% repetition = all unique = good (human-like)            │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  STEP 5: Find most repeated n-grams                             │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │ Count occurrences of each n-gram                          │  │
+│  │ Filter those appearing > 1 time                           │  │
+│  │ Sort by frequency (descending)                            │  │
+│  │ Return top 5                                              │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+Visual: N-gram Extraction Process
+text
+
+TEXT: "I love to code and I love to learn"
+
+STEP 1: Get words
+┌─────────────────────────────────────────────────────────────────┐
+│  ["i", "love", "to", "code", "and", "i", "love", "to", "learn"] │
+└─────────────────────────────────────────────────────────────────┘
+
+STEP 2: Create trigrams (n=3)
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                 │
+│  Position 0: │ i │ love │ to │ code │ and │ i │ love │ to │ learn │
+│              └───┴──────┴────┘                                  │
+│              "i love to"                                        │
+│                                                                 │
+│  Position 1: │ i │ love │ to │ code │ and │ i │ love │ to │ learn │
+│                  └──────┴────┴──────┘                           │
+│                  "love to code"                                 │
+│                                                                 │
+│  Position 2: │ i │ love │ to │ code │ and │ i │ love │ to │ learn │
+│                        └────┴──────┴─────┘                      │
+│                        "to code and"                            │
+│                                                                 │
+│  ... and so on ...                                              │
+│                                                                 │
+│  Position 6: │ i │ love │ to │ code │ and │ i │ love │ to │ learn │
+│                                              └──────┴────┴───────┘
+│                                              "love to learn"    │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+
+STEP 3: Find repeats
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                 │
+│  "i love to"      → 2 times ⚠️ REPEATED                         │
+│  "love to code"   → 1 time                                      │
+│  "to code and"    → 1 time                                      │
+│  "code and i"     → 1 time                                      │
+│  "and i love"     → 1 time                                      │
+│  "i love to"      → (already counted)                           │
+│  "love to learn"  → 1 time                                      │
+│                                                                 │
+│  Total: 7 trigrams                                              │
+│  Unique: 6 trigrams                                             │
+│  Repetition Rate: 1 - (6/7) = 14.3%                             │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+Visual: High vs Low Repetition
+text
+
+HIGH REPETITION (AI-like):
+┌─────────────────────────────────────────────────────────────────┐
+│  "It is important to note that. It is important to remember.   │
+│   It is important to understand that it is important."         │
+│                                                                 │
+│  Repeated trigrams:                                             │
+│  • "it is important" → 4 times 🚨                               │
+│  • "is important to" → 4 times 🚨                               │
+│  • "important to note" → 1 time                                 │
+│  • "important to remember" → 1 time                             │
+│  • "important to understand" → 1 time                           │
+│                                                                 │
+│  Repetition Rate: ~45% 🚨 HIGH                                  │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+
+LOW REPETITION (Human-like):
+┌─────────────────────────────────────────────────────────────────┐
+│  "My dog loves playing fetch. She runs across the yard          │
+│   and brings back the ball every single time."                  │
+│                                                                 │
+│  All trigrams are unique!                                       │
+│  • "my dog loves" → 1 time                                      │
+│  • "dog loves playing" → 1 time                                 │
+│  • "loves playing fetch" → 1 time                               │
+│  • ... all unique ...                                           │
+│                                                                 │
+│  Repetition Rate: ~0% ✅ LOW                                    │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+What It Returns
+JavaScript
+
+{
+  repetitionRate: 0.143,           // 14.3% of n-grams repeated
+  uniqueRatio: 0.857,              // 85.7% are unique
+  totalNgrams: 7,                  // Total n-grams generated
+  uniqueNgrams: 6,                 // How many are unique
+  mostRepeated: [                  // Top 5 repeated n-grams
+    ["i love to", 2],              // [n-gram, count]
+    // ...
+  ]
+}
+4️⃣ LEXICAL DIVERSITY (Type-Token Ratio)
+Code Block
+JavaScript
+
+// ═══════════════════════════════════════════════════════════════
+// LEXICAL DIVERSITY (Type-Token Ratio)
+// ═══════════════════════════════════════════════════════════════
+
+function calculateLexicalDiversity(text) {
+  const words = text.toLowerCase()
+    .replace(/[^\w\s]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length > 0);
+
+  if (words.length === 0) return { ttr: 0, uniqueWords: 0 };
+
+  const uniqueWords = new Set(words);
+  const ttr = uniqueWords.size / words.length;
+
+  // Moving-average type-token ratio (MATTR) for longer texts
+  const windowSize = Math.min(100, words.length);
+  let mattr = 0;
+
+  if (words.length >= windowSize) {
+    let windows = 0;
+    for (let i = 0; i <= words.length - windowSize; i += 10) {
+      const window = words.slice(i, i + windowSize);
+      const windowUnique = new Set(window);
+      mattr += windowUnique.size / windowSize;
+      windows++;
+    }
+    mattr /= windows;
+  } else {
+    mattr = ttr;
+  }
+
+  return {
+    ttr,
+    mattr,
+    uniqueWords: uniqueWords.size,
+    totalWords: words.length,
+    interpretation: ttr > 0.7 ? 'High diversity' : ttr > 0.5 ? 'Moderate diversity' : 'Low diversity'
+  };
+}
+How It's Used in Main Function
+JavaScript
+
+// In analyzeTextStatistics():
+const lexical = calculateLexicalDiversity(text);
+
+// Normalization (inverted - low diversity = AI-like):
+const normalizedFeatures = {
+  lexicalDiversity: normalizeFeature(1 - lexical.ttr, { mean: 0.35, stdDev: 0.15 }),
+  // ...
+};
+
+// Generating reasons:
+if (normalizedFeatures.lexicalDiversity > threshold) {
+  reasons.push(`Limited vocabulary diversity (TTR: ${(lexical.ttr * 100).toFixed(0)}%)`);
+}
+Human Baseline
+JavaScript
+
+const HUMAN_BASELINES = {
+  lexicalDiversity: { mean: 0.65, stdDev: 0.15 },
+  // ...
+};
+Explanation
+text
+
+┌─────────────────────────────────────────────────────────────────┐
+│                    LEXICAL DIVERSITY ANALYSIS                   │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  WHAT IT MEASURES:                                              │
+│  VOCABULARY RICHNESS - ratio of unique words to total words     │
+│                                                                 │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                 │
+│  KEY TERMS:                                                     │
+│  • Type = Unique words                                          │
+│  • Token = All words (including repeats)                        │
+│  • TTR = Type-Token Ratio = Unique / Total                      │
+│                                                                 │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                 │
+│  WHY IT MATTERS:                                                │
+│  • AI tends to REPEAT words (low diversity)                     │
+│  • Humans use VARIED vocabulary (high diversity)                │
+│                                                                 │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                 │
+│  STEP-BY-STEP LOGIC:                                            │
+│                                                                 │
+│  STEP 1: Extract all words (tokens)                             │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │ Input: "The dog chased the cat. The dog was fast."        │  │
+│  │                                                           │  │
+│  │ words = ["the", "dog", "chased", "the", "cat",            │  │
+│  │          "the", "dog", "was", "fast"]                     │  │
+│  │                                                           │  │
+│  │ Total tokens: 9                                           │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  STEP 2: Find unique words (types)                              │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │ uniqueWords = new Set(words)                              │  │
+│  │                                                           │  │
+│  │ Set: {"the", "dog", "chased", "cat", "was", "fast"}       │  │
+│  │                                                           │  │
+│  │ Total types: 6                                            │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  STEP 3: Calculate TTR                                          │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │ TTR = uniqueWords.size / words.length                     │  │
+│  │ TTR = 6 / 9 = 0.67 (67%)                                  │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  STEP 4: Calculate MATTR (for long texts)                       │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │ • Use sliding window of 100 words                         │  │
+│  │ • Calculate TTR for each window                           │  │
+│  │ • Average all window TTRs                                 │  │
+│  │ • More stable for long texts                              │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+Visual: TTR Calculation
+text
+
+INPUT: "The dog chased the cat. The dog was fast."
+
+STEP 1: Count ALL words (Tokens)
+┌─────────────────────────────────────────────────────────────────┐
+│  the  dog  chased  the  cat  the  dog  was  fast                │
+│   1    2     3      4    5    6    7    8    9                  │
+│                                                                 │
+│  Total Tokens = 9                                               │
+└─────────────────────────────────────────────────────────────────┘
+
+STEP 2: Count UNIQUE words (Types)
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                 │
+│  Word      │ Count │ Unique?                                    │
+│  ──────────┼───────┼────────                                    │
+│  the       │  3    │ ✅ (count once)                            │
+│  dog       │  2    │ ✅ (count once)                            │
+│  chased    │  1    │ ✅                                         │
+│  cat       │  1    │ ✅                                         │
+│  was       │  1    │ ✅                                         │
+│  fast      │  1    │ ✅                                         │
+│  ──────────┼───────┼────────                                    │
+│  TOTAL     │       │ 6 unique                                   │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+
+STEP 3: Calculate TTR
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                 │
+│  TTR = Types / Tokens                                           │
+│  TTR = 6 / 9                                                    │
+│  TTR = 0.67 (67%)                                               │
+│                                                                 │
+│  INTERPRETATION:                                                │
+│  0.67 > 0.5 = "Moderate diversity" ✅                           │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+Visual: Low vs High Diversity
+text
+
+LOW DIVERSITY (AI-like):
+┌─────────────────────────────────────────────────────────────────┐
+│  "The system is a system that works on the system parameters.   │
+│   The system provides system updates for the system."           │
+│                                                                 │
+│  Word Cloud:                                                    │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │                                                          │   │
+│  │      SYSTEM   SYSTEM   SYSTEM   SYSTEM   SYSTEM          │   │
+│  │          THE  THE  THE  THE                              │   │
+│  │            is  that  a  works  on  parameters            │   │
+│  │              provides  updates  for                      │   │
+│  │                                                          │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  Tokens: 20 | Types: 10 | TTR: 0.50 (50%) 🚨                    │
+│  "system" dominates = LOW DIVERSITY                             │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+
+HIGH DIVERSITY (Human-like):
+┌─────────────────────────────────────────────────────────────────┐
+│  "My golden retriever loves chasing squirrels through           │
+│   the backyard during crisp autumn mornings."                   │
+│                                                                 │
+│  Word Cloud:                                                    │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │                                                          │   │
+│  │  my  golden  retriever  loves  chasing  squirrels        │   │
+│  │  through  the  backyard  during  crisp  autumn  mornings │   │
+│  │                                                          │   │
+│  │           (all words same size = all unique!)            │   │
+│  │                                                          │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  Tokens: 12 | Types: 12 | TTR: 1.00 (100%) ✅                   │
+│  All unique words = HIGH DIVERSITY                              │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+What It Returns
+JavaScript
+
+{
+  ttr: 0.67,                // Type-Token Ratio (0 to 1)
+  mattr: 0.67,              // Moving-Average TTR (for long texts)
+  uniqueWords: 6,           // Count of unique words
+  totalWords: 9,            // Total word count
+  interpretation: 'Moderate diversity'  // Human-readable
+}
+
+// Interpretation thresholds:
+// ttr > 0.7 = 'High diversity' (human-like)
+// ttr > 0.5 = 'Moderate diversity'
+// ttr <= 0.5 = 'Low diversity' (AI-like)
+5️⃣ TRANSITION DENSITY
+Code Block
+JavaScript
+
+// FIX: Added transition word density (transitions per sentence)
+function calculateTransitionDensity(text) {
+  const transitions = ['however', 'moreover', 'therefore', 'consequently', 'furthermore', 'additionally', 'thus', 'hence', 'nevertheless', 'nonetheless', 'similarly', 'meanwhile', 'in contrast', 'on the other hand'];
+  const lower = text.toLowerCase();
+  let count = 0;
+  transitions.forEach(t => {
+    const re = new RegExp('\\b' + t.replace(/\s+/g, '\\s+') + '\\b', 'gi');
+    const m = lower.match(re);
+    if (m) count += m.length;
+  });
+  const sentences = analyzeSentences(text).count || 1;
+  return count / Math.max(1, sentences);
+}
+How It's Used in Main Function
+JavaScript
+
+// In analyzeTextStatistics():
+const transitionDensity = calculateTransitionDensity(text);
+
+// Normalization:
+const normalizedFeatures = {
+  transitionDensity: normalizeFeature(transitionDensity, HUMAN_BASELINES.transitionDensity),
+  // ...
+};
+
+// Generating reasons:
+if (normalizedFeatures.transitionDensity > threshold) {
+  reasons.push('Overuse of transition phrases');
+}
+Human Baseline
+JavaScript
+
+const HUMAN_BASELINES = {
+  transitionDensity: { mean: 0.12, stdDev: 0.06 },
+  // ...
+};
+Explanation
+text
+
+┌─────────────────────────────────────────────────────────────────┐
+│                    TRANSITION DENSITY ANALYSIS                  │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  WHAT IT MEASURES:                                              │
+│  How many FORMAL TRANSITION WORDS per sentence                  │
+│                                                                 │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                 │
+│  TRANSITION WORDS DETECTED:                                     │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │ • however                • furthermore                    │  │
+│  │ • moreover               • additionally                   │  │
+│  │ • therefore              • thus                           │  │
+│  │ • consequently           • hence                          │  │
+│  │ • nevertheless           • nonetheless                    │  │
+│  │ • similarly              • meanwhile                      │  │
+│  │ • in contrast            • on the other hand              │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                 │
+│  WHY IT MATTERS:                                                │
+│  • AI OVERUSES formal transition words                          │
+│  • Humans use them more SPARINGLY and naturally                 │
+│                                                                 │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                 │
+│  STEP-BY-STEP LOGIC:                                            │
+│                                                                 │
+│  STEP 1: Define transition word list                            │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │ const transitions = ['however', 'moreover', 'therefore',  │  │
+│  │   'consequently', 'furthermore', 'additionally', 'thus',  │  │
+│  │   'hence', 'nevertheless', 'nonetheless', 'similarly',    │  │
+│  │   'meanwhile', 'in contrast', 'on the other hand'];       │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  STEP 2: Count each transition word in text                     │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │ For each transition word:                                 │  │
+│  │   Create regex: /\bhowever\b/gi                           │  │
+│  │   Match in text                                           │  │
+│  │   Add match count to total                                │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  STEP 3: Count sentences                                        │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │ Use analyzeSentences() to count sentences                 │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  STEP 4: Calculate density                                      │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │ density = transitionCount / sentenceCount                 │  │
+│  │                                                           │  │
+│  │ Human baseline: ~0.12 (1 transition per 8 sentences)      │  │
+│  │ AI tendency: ~0.5+ (1 transition per 2 sentences) 🚨      │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+Visual: Transition Detection
+text
+
+INPUT TEXT:
+"Climate change is a serious issue. However, some people disagree.
+ Moreover, action is needed urgently. Furthermore, governments must act.
+ Therefore, we should all contribute. Additionally, businesses play a role."
+
+DETECTION PROCESS:
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                 │
+│  STEP 1: Find transitions                                       │
+│                                                                 │
+│  Sentence 1: "Climate change is a serious issue."               │
+│              → No transitions                                   │
+│                                                                 │
+│  Sentence 2: "[HOWEVER], some people disagree."                 │
+│              → 1 transition found ✅                            │
+│                                                                 │
+│  Sentence 3: "[MOREOVER], action is needed urgently."           │
+│              → 1 transition found ✅                            │
+│                                                                 │
+│  Sentence 4: "[FURTHERMORE], governments must act."             │
+│              → 1 transition found ✅                            │
+│                                                                 │
+│  Sentence 5: "[THEREFORE], we should all contribute."           │
+│              → 1 transition found ✅                            │
+│                                                                 │
+│  Sentence 6: "[ADDITIONALLY], businesses play a role."          │
+│              → 1 transition found ✅                            │
+│                                                                 │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                 │
+│  STEP 2: Calculate density                                      │
+│                                                                 │
+│  Transitions found: 5                                           │
+│  Sentences: 6                                                   │
+│                                                                 │
+│  Density = 5 / 6 = 0.83 transitions per sentence 🚨             │
+│                                                                 │
+│  Human baseline: 0.12                                           │
+│  This text: 0.83 (7× higher than normal!)                       │
+│                                                                 │
+│  RESULT: VERY HIGH transition density = AI SIGNAL               │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+Visual: Normal vs High Density
+text
+
+NORMAL DENSITY (Human-like):
+┌─────────────────────────────────────────────────────────────────┐
+│  "I went to the store today. Bought some groceries.             │
+│   The weather was nice. Made dinner at home.                    │
+│   Watched a movie after. It was pretty relaxing.                │
+│   [However], I still have work tomorrow."                       │
+│                                                                 │
+│  Transitions: 1 (however)                                       │
+│  Sentences: 7                                                   │
+│  Density: 1/7 = 0.14 ✅ (close to human baseline of 0.12)       │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+
+HIGH DENSITY (AI-like):
+┌─────────────────────────────────────────────────────────────────┐
+│  "The topic is important. [Moreover], it affects everyone.      │
+│   [Furthermore], experts agree. [Additionally], research shows. │
+│   [Consequently], we must act. [Therefore], change is needed.   │
+│   [Nevertheless], progress is possible."                        │
+│                                                                 │
+│  Transitions: 6 (moreover, furthermore, additionally,           │
+│               consequently, therefore, nevertheless)            │
+│  Sentences: 7                                                   │
+│  Density: 6/7 = 0.86 🚨 (7× higher than normal!)                │
+│                                                                 │
+│  REASON: "Overuse of transition phrases"                        │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+What It Returns
+JavaScript
+
+// Returns a single number (transitions per sentence)
+return count / Math.max(1, sentences);  // e.g., 0.83
+
+// Higher = more formal transitions (AI-like)
+// Lower = natural flow (human-like)
+// Human baseline: ~0.12
+📊 HOW ALL FEATURES COMBINE
+The Main Function Flow
+JavaScript
+
+export function analyzeTextStatistics(text) {
+  // 1. Extract all features
+  const sentences = analyzeSentences(text);
+  const entropy = calculateTokenEntropy(text);
+  const ngrams = analyzeNgramRepetition(text, 3);
+  const lexical = calculateLexicalDiversity(text);
+  const transitionDensity = calculateTransitionDensity(text);
+  // ... other features ...
+
+  // 2. Normalize each feature to 0-1 scale
+  const normalizedFeatures = {
+    sentenceLengthVariance: normalizeFeature(sentences.variance, HUMAN_BASELINES.sentenceLengthVariance),
+    tokenEntropy: normalizeFeature(entropy, baselines.tokenEntropy),
+    ngramRepetition: normalizeFeature(ngrams.repetitionRate, HUMAN_BASELINES.ngramRepetition),
+    lexicalDiversity: normalizeFeature(1 - lexical.ttr, { mean: 0.35, stdDev: 0.15 }),
+    transitionDensity: normalizeFeature(transitionDensity, HUMAN_BASELINES.transitionDensity),
+    // ...
+  };
+
+  // 3. Apply weights
+  const weights = {
+    sentenceLengthVariance: 0.11,
+    ngramRepetition: 0.11,
+    lexicalDiversity: 0.09,
+    tokenEntropy: 0.09,
+    transitionDensity: 0.05,
+    // ...
+  };
+
+  // 4. Calculate weighted score
+  let score = 0;
+  Object.keys(normalizedFeatures).forEach(feature => {
+    score += normalizedFeatures[feature] * weights[feature];
+  });
+  score = score * 100;  // Convert to 0-100
+
+  // 5. Generate reasons
+  // ... (based on which features exceeded threshold)
+
+  return { score, confidence, reasons, ... };
+}
+Visual: Complete Analysis Flow
+text
+
+                            INPUT TEXT
+                                │
+                                ▼
+┌───────────────────────────────────────────────────────────────┐
+│                    FEATURE EXTRACTION                         │
+│                                                               │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐    │
+│  │  Sentence   │  │   Token     │  │    N-gram           │    │
+│  │  Variance   │  │   Entropy   │  │    Repetition       │    │
+│  │             │  │             │  │                     │    │
+│  │  Raw: 45.2  │  │  Raw: 7.8   │  │  Raw: 0.18          │    │
+│  └──────┬──────┘  └──────┬──────┘  └──────────┬──────────┘    │
+│         │                │                    │               │
+│  ┌──────┴──────┐  ┌──────┴──────┐  ┌─────────┴───────────┐    │
+│  │   Lexical   │  │  Transition │  │   + Other Features  │    │
+│  │  Diversity  │  │   Density   │  │                     │    │
+│  │             │  │             │  │   (burstiness,      │    │
+│  │  Raw: 0.62  │  │  Raw: 0.45  │  │    stopwords, etc.) │    │
+│  └──────┬──────┘  └──────┬──────┘  └──────────┬──────────┘    │
+│         │                │                    │               │
+└─────────┼────────────────┼────────────────────┼───────────────┘
+          │                │                    │
+          ▼                ▼                    ▼
+┌───────────────────────────────────────────────────────────────┐
+│                    NORMALIZATION (Z-Score)                    │
+│                                                               │
+│  For each feature:                                            │
+│    z = (value - baseline.mean) / baseline.stdDev              │
+│    normalized = |z| / 3                                       │
+│    clamp to [0, 1]                                            │
+│                                                               │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐            │
+│  │ SentVar:    │  │ Entropy:    │  │ N-gram:     │            │
+│  │   0.52      │  │   0.47      │  │   0.30      │            │
+│  └─────────────┘  └─────────────┘  └─────────────┘            │
+│  ┌─────────────┐  ┌─────────────┐                             │
+│  │ LexDiv:     │  │ TransDens:  │                             │
+│  │   0.20      │  │   0.55      │                             │
+│  └─────────────┘  └─────────────┘                             │
+│                                                               │
+└───────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌───────────────────────────────────────────────────────────────┐
+│                    WEIGHTED COMBINATION                       │
+│                                                               │
+│  score = Σ(normalizedFeature × weight)                        │
+│                                                               │
+│  sentenceLengthVariance × 0.11  = 0.52 × 0.11 = 0.057         │
+│  tokenEntropy × 0.09            = 0.47 × 0.09 = 0.042         │
+│  ngramRepetition × 0.11         = 0.30 × 0.11 = 0.033         │
+│  lexicalDiversity × 0.09        = 0.20 × 0.09 = 0.018         │
+│  transitionDensity × 0.05       = 0.55 × 0.05 = 0.028         │
+│  ... + other features ...                                     │
+│                                                               │
+│  Total = 0.45                                                 │
+│  Final Score = 0.45 × 100 = 45                                │
+│                                                               │
+└───────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌───────────────────────────────────────────────────────────────┐
+│                    GENERATE REASONS                           │
+│                                                               │
+│  For features > 0.6 threshold:                                │
+│  • transitionDensity (0.55) → Not quite, but close            │
+│  • sentenceLengthVariance (0.52) → Not quite                  │
+│                                                               │
+│  reasons = []  (no features exceeded threshold)               │
+│                                                               │
+└───────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌───────────────────────────────────────────────────────────────┐
+│                    FINAL OUTPUT                               │
+│                                                               │
+│  {                                                            │
+│    score: 45,                                                 │
+│    confidence: 62,                                            │
+│    reasons: [],                                               │
+│    interpretation: 'Uncertain - mixed signals'                │
+│  }                                                            │
+│                                                               │
+└───────────────────────────────────────────────────────────────┘
+📋 COMPLETE SUMMARY TABLE
+text
+
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                         STATISTICAL FEATURES SUMMARY                           │
+├────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                │
+│  FEATURE           │ FUNCTION                  │ AI SIGNAL      │ WEIGHT      │
+│  ──────────────────┼───────────────────────────┼────────────────┼────────────  │
+│  Sentence Variance │ analyzeSentences()        │ LOW variance   │ 0.11        │
+│                    │                           │ (uniform)      │             │
+│                    │                           │                │             │
+│  Token Entropy     │ calculateTokenEntropy()   │ LOW entropy    │ 0.09        │
+│                    │                           │ (predictable)  │             │
+│                    │                           │                │             │
+│  N-gram Repetition │ analyzeNgramRepetition()  │ HIGH repetition│ 0.11        │
+│                    │                           │ (repeats)      │             │
+│                    │                           │                │             │
+│  Lexical Diversity │ calculateLexicalDiversity │ LOW diversity  │ 0.09        │
+│                    │                           │ (limited vocab)│             │
+│                    │                           │                │             │
+│  Transition Density│ calculateTransitionDensity│ HIGH density   │ 0.05        │
+│                    │                           │ (overuse)      │             │
+│                                                                                │
+└────────────────────────────────────────────────────────────────────────────────┘
+🎯 QUICK REFERENCE: AI vs Human Signals
+text
+
+┌─────────────────────────────────────────────────────────────────┐
+│                    AI vs HUMAN SIGNALS                          │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  FEATURE              │  AI SIGNAL 🤖      │  HUMAN SIGNAL 👤   │
+│  ─────────────────────┼────────────────────┼───────────────────  │
+│  Sentence Variance    │  LOW (uniform)     │  HIGH (varied)     │
+│  Token Entropy        │  LOW (predictable) │  HIGH (random)     │
+│  N-gram Repetition    │  HIGH (repeats)    │  LOW (unique)      │
+│  Lexical Diversity    │  LOW (limited)     │  HIGH (rich)       │
+│  Transition Density   │  HIGH (overuse)    │  LOW (natural)     │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+
+=======================================================================================================================================================================
