@@ -722,10 +722,11 @@
         return false;
       }
 
-      // Skip tiny images (icons, tracking pixels)
+      // Skip small images (icons, avatars, profile photos)
+      // Increased threshold from 100 to 200 to filter out most UI elements
       const width = img.naturalWidth || img.width || 0;
       const height = img.naturalHeight || img.height || 0;
-      if (width < 100 || height < 100) {
+      if (width < 200 || height < 200) {
         return false;
       }
 
@@ -736,6 +737,26 @@
 
       // Skip tiny data URIs
       if (img.src && img.src.startsWith('data:') && img.src.length < 500) {
+        return false;
+      }
+
+      // Skip images with UI-related class names or IDs
+      const classAndId = (img.className + ' ' + img.id + ' ' + (img.alt || '')).toLowerCase();
+      const uiPatterns = ['avatar', 'profile', 'icon', 'logo', 'emoji', 'badge', 'button', 'favicon', 'sprite', 'thumb'];
+      if (uiPatterns.some(pattern => classAndId.includes(pattern))) {
+        return false;
+      }
+
+      // Skip images by src URL patterns
+      const srcLower = (img.src || '').toLowerCase();
+      const srcPatterns = ['/avatar', '/profile', '/icon', '/emoji', '/badge', 'favicon', 'sprite', '/logo', '/thumb'];
+      if (srcPatterns.some(pattern => srcLower.includes(pattern))) {
+        return false;
+      }
+
+      // Skip images inside navigation and header elements
+      const parent = img.closest('nav, header, footer, [role="navigation"], [role="banner"], .navbar, .nav, .sidebar');
+      if (parent) {
         return false;
       }
 
