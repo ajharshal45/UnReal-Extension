@@ -37,7 +37,7 @@
 
 1. **Clone or download this repository**
    ```bash
-   git clone https://github.com/Rachit-Ingole/unreal-chrome-extension.git
+   git clone https://github.com/ajharshal45/UnReal-Extension.gi
    cd unreal-chrome-extension
    ```
 
@@ -353,7 +353,7 @@ If you notice stale results:
 
 ```bash
 # Clone repository
-git clone https://github.com/Rachit-Ingole/unreal-chrome-extension.git
+git clone https://github.com/ajharshal45/UnReal-Extension.git
 cd unreal-chrome-extension/extension
 
 # Start ML backend (in a separate terminal)
@@ -577,7 +577,7 @@ For issues, questions, or suggestions:
 
 ## 🔗 Links
 
-- **GitHub Repository**: https://github.com/Rachit-Ingole/unreal-chrome-extension
+- **GitHub Repository**: https://github.com/ajharshal45/UnReal-Extension
 - **Landing Page**: [docs/index.html](docs/index.html)
 - **Google AI Studio**: https://aistudio.google.com/
 - **Chrome Extensions**: https://developer.chrome.com/docs/extensions/
@@ -590,6 +590,6 @@ For issues, questions, or suggestions:
 
 Made possible by modern web technologies, local ML, and AI
 
-*Developed by Team OpenAIBetter*
+*Developed by Team TheGoogleGoats*
 
 </div>
