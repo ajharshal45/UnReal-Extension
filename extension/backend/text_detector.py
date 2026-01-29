@@ -17,12 +17,17 @@ from flask_cors import CORS
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch
 import logging
+import os
 
 # Configuration
-MODEL_NAME = "openai-community/roberta-base-openai-detector"
+MODEL_NAME = "roberta-base-openai-detector"
 PORT = 8001  # Different port from image backend (8000)
 HOST = "127.0.0.1"
 MIN_WORDS = 15
+
+# Use local model path (relative to this script)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(SCRIPT_DIR, "text_model")
 
 # Logging setup
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -40,14 +45,22 @@ def load_model():
     """Load model and tokenizer once at startup."""
     global tokenizer, model
     try:
-        logger.info(f"Loading model: {MODEL_NAME}...")
-        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-        model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
+        logger.info(f"Loading model from local path: {MODEL_PATH}...")
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, local_files_only=True)
+        model = AutoModelForSequenceClassification.from_pretrained(MODEL_PATH, local_files_only=True)
         model.eval()  # Set to evaluation mode
-        logger.info("Model loaded successfully.")
+        logger.info("Local model loaded successfully.")
     except Exception as e:
-        logger.error(f"Failed to load model: {e}")
-        raise e
+        logger.error(f"Failed to load local model: {e}")
+        logger.info("Falling back to download from HuggingFace...")
+        try:
+            tokenizer = AutoTokenizer.from_pretrained("openai-community/roberta-base-openai-detector")
+            model = AutoModelForSequenceClassification.from_pretrained("openai-community/roberta-base-openai-detector")
+            model.eval()
+            logger.info("Model loaded from HuggingFace successfully.")
+        except Exception as e2:
+            logger.error(f"Failed to load model from HuggingFace: {e2}")
+            raise e2
 
 @app.route('/detect', methods=['POST'])
 def detect():

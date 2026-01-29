@@ -41,8 +41,11 @@
                 "layer3-local-ml.js",
                 "layer4-gemini.js",
                 "imageAnalysisPipeline.js",
+                "videoAnalysisPipeline.js",
                 "patternDatabase.js",
-                "socialMediaScanner.js"
+                "socialMediaScanner.js",
+                "headlineExtractor.js",
+                "newsVerifier.js"
             ],
             "matches": [
                 "<all_urls>"

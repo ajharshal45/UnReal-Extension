@@ -158,6 +158,47 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // ========== TEXT BACKEND PROXY (Text Detection) ==========
+  if (message.type === 'TEXT_BACKEND_REQUEST') {
+    (async () => {
+      try {
+        const { text } = message;
+        const backendUrl = 'http://localhost:8001';
+
+        console.log('[Background] Text Backend request, text length:', text?.length || 0);
+
+        const response = await fetch(`${backendUrl}/detect`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          body: JSON.stringify({ text })
+        });
+
+        if (!response.ok) {
+          sendResponse({
+            success: false,
+            error: `Text backend returned ${response.status}`
+          });
+          return;
+        }
+
+        const data = await response.json();
+        console.log('[Background] Text Backend response:', data);
+        sendResponse({ success: true, data });
+
+      } catch (error) {
+        console.log('[Background] Text Backend error:', error.message);
+        sendResponse({
+          success: false,
+          error: error.message
+        });
+      }
+    })();
+    return true;
+  }
+
   // ========== FETCH IMAGE FOR ANALYSIS (Used by Layer 3 & 4) ==========
   if (message.type === 'FETCH_IMAGE_FOR_ANALYSIS') {
     (async () => {
@@ -236,55 +277,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  // ========== SIGHTENGINE API PROXY ==========
-  if (message.type === 'CALL_SIGHTENGINE_API') {
-    (async () => {
-      try {
-        const { imageUrl, base64Image, apiUser, apiSecret } = message.data;
-
-        let response;
-        if (imageUrl && !imageUrl.startsWith('data:')) {
-          const params = new URLSearchParams({
-            url: imageUrl,
-            models: 'genai',
-            api_user: apiUser,
-            api_secret: apiSecret
-          });
-          response = await fetch(`https://api.sightengine.com/1.0/check.json?${params}`);
-        } else if (base64Image) {
-          const base64Data = base64Image.split(',')[1] || base64Image;
-          const byteCharacters = atob(base64Data);
-          const byteNumbers = new Array(byteCharacters.length);
-          for (let i = 0; i < byteCharacters.length; i++) {
-            byteNumbers[i] = byteCharacters.charCodeAt(i);
-          }
-          const byteArray = new Uint8Array(byteNumbers);
-          const blob = new Blob([byteArray], { type: 'image/jpeg' });
-
-          const formData = new FormData();
-          formData.append('media', blob, 'image.jpg');
-          formData.append('models', 'genai');
-          formData.append('api_user', apiUser);
-          formData.append('api_secret', apiSecret);
-
-          response = await fetch('https://api.sightengine.com/1.0/check.json', {
-            method: 'POST',
-            body: formData
-          });
-        } else {
-          sendResponse({ success: false, error: 'No image data provided' });
-          return;
-        }
-
-        const data = await response.json();
-        sendResponse({ success: response.ok, data, status: response.status });
-      } catch (error) {
-        console.error('[Background] Sightengine API error:', error);
-        sendResponse({ success: false, error: error.message });
-      }
-    })();
-    return true;
-  }
 
   // ========== GEMINI VISION API PROXY ==========
   if (message.type === 'CALL_GEMINI_VISION_API') {
@@ -340,22 +332,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'GET_API_CREDENTIALS') {
     (async () => {
       try {
-        const data = await chrome.storage.sync.get([
-          'geminiApiKey',
-          'sightengineUser',
-          'sightengineSecret'
-        ]);
+        const data = await chrome.storage.sync.get(['geminiApiKey']);
         sendResponse({
-          geminiApiKey: data.geminiApiKey || null,
-          sightengineUser: data.sightengineUser || null,
-          sightengineSecret: data.sightengineSecret || null
+          geminiApiKey: data.geminiApiKey || null
         });
       } catch (error) {
         console.error('[Background] Error getting credentials:', error);
         sendResponse({
-          geminiApiKey: null,
-          sightengineUser: null,
-          sightengineSecret: null
+          geminiApiKey: null
         });
       }
     })();
@@ -419,6 +403,52 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ success: true });
       } catch (error) {
         console.error('ShareSafe: Error storing analysis', error);
+        sendResponse({ success: false });
+      }
+    })();
+    return true;
+  }
+
+  // ========== STORE VIDEO ANALYSIS ==========
+  if (message.type === 'STORE_VIDEO_ANALYSIS') {
+    (async () => {
+      try {
+        // Store video analysis results
+        const videoResults = (await chrome.storage.local.get(['videoAnalysisResults'])).videoAnalysisResults || [];
+        videoResults.push({
+          ...message.data,
+          timestamp: Date.now()
+        });
+        // Keep only last 20 results
+        const trimmed = videoResults.slice(-20);
+        await chrome.storage.local.set({ videoAnalysisResults: trimmed });
+        console.log('[Background] Stored video analysis:', message.data.riskLevel);
+        sendResponse({ success: true });
+      } catch (error) {
+        console.error('ShareSafe: Error storing video analysis', error);
+        sendResponse({ success: false });
+      }
+    })();
+    return true;
+  }
+
+  // ========== STORE FAKE NEWS ANALYSIS ==========
+  if (message.type === 'STORE_FAKE_NEWS_ANALYSIS') {
+    (async () => {
+      try {
+        // Store fake news analysis results
+        const fakeNewsResults = (await chrome.storage.local.get(['fakeNewsAnalysisResults'])).fakeNewsAnalysisResults || [];
+        fakeNewsResults.push({
+          ...message.data,
+          timestamp: Date.now()
+        });
+        // Keep only last 15 results to save storage
+        const trimmed = fakeNewsResults.slice(-15);
+        await chrome.storage.local.set({ fakeNewsAnalysisResults: trimmed });
+        console.log('[Background] Stored fake news analysis:', message.data.riskLevel, '-', message.data.summary);
+        sendResponse({ success: true });
+      } catch (error) {
+        console.error('ShareSafe: Error storing fake news analysis', error);
         sendResponse({ success: false });
       }
     })();
@@ -526,14 +556,14 @@ console.log('ShareSafe v2.2: Background worker initialized with CORS bypass. LLM
 
 async function checkBackendHealth() {
   const now = Date.now();
-  
+
   // Only check every 30 seconds
   if (now - backendStatus.lastCheck < 30000) {
     return backendStatus;
   }
-  
+
   console.log('[Background] Checking backend health...');
-  
+
   // Check image backend (port 8000)
   try {
     const imageResponse = await fetch('http://localhost:8000/health', {
@@ -544,7 +574,7 @@ async function checkBackendHealth() {
   } catch (error) {
     backendStatus.image = false;
   }
-  
+
   // Check text backend (port 8001)
   try {
     const textResponse = await fetch('http://localhost:8001/detect', {
@@ -557,12 +587,12 @@ async function checkBackendHealth() {
   } catch (error) {
     backendStatus.text = false;
   }
-  
+
   backendStatus.lastCheck = now;
-  
+
   // Store in chrome.storage for popup access
   chrome.storage.local.set({ backendStatus });
-  
+
   console.log('[Background] Backend status:', backendStatus);
   return backendStatus;
 }

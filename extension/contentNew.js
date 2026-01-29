@@ -1,5 +1,6 @@
-// ShareSafe Content Script v2.2 - Unified AI Detection
+// ShareSafe Content Script v2.5 - Unified AI Detection
 // Integrates text and image detection with social media scanning
+// Added overlay toggle support
 
 // NOTE: Pipeline is loaded dynamically - Chrome content scripts cannot use static imports
 // All modules use chrome.runtime.getURL() for dynamic imports
@@ -9,7 +10,66 @@
 // ═══════════════════════════════════════════════════════════════
 let patternDatabase = null;
 let socialMediaScanner = null;
+let headlineExtractor = null;
+let newsVerifier = null;
 let textDetectionEnabled = false;
+let fakeNewsDetectionEnabled = false;
+let overlaysVisible = true; // Global flag for overlay visibility
+
+// ═══════════════════════════════════════════════════════════════
+// MESSAGE HANDLERS (Global scope for popup communication)
+// ═══════════════════════════════════════════════════════════════
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === 'TOGGLE_OVERLAYS') {
+    overlaysVisible = message.visible;
+    toggleAllOverlays(message.visible);
+    sendResponse({ success: true });
+    return true;
+  }
+  
+  if (message.type === 'SETTINGS_CHANGED') {
+    if (message.setting === 'extensionEnabled' && !message.value) {
+      // Hide all overlays when extension is disabled
+      toggleAllOverlays(false);
+    }
+    sendResponse({ success: true });
+    return true;
+  }
+  
+  return false;
+});
+
+// Toggle visibility of all overlays
+function toggleAllOverlays(visible) {
+  // Image badges
+  document.querySelectorAll('.unreal-image-badge, .unreal-spinner-overlay').forEach(el => {
+    el.style.display = visible ? '' : 'none';
+  });
+  
+  // Image borders
+  document.querySelectorAll('.unreal-image-border-high, .unreal-image-border-medium, .unreal-image-border-low').forEach(el => {
+    if (!visible) {
+      el.classList.remove('unreal-image-border-high', 'unreal-image-border-medium', 'unreal-image-border-low');
+    }
+  });
+  
+  // Text highlights and badges
+  document.querySelectorAll('.sharesafe-segment-highlight, .sharesafe-segment-badge, .sharesafe-text-indicator').forEach(el => {
+    el.style.display = visible ? '' : 'none';
+  });
+  
+  // Summary panel
+  document.querySelectorAll('.sharesafe-summary-panel, #sharesafe-floating-badge').forEach(el => {
+    el.style.display = visible ? '' : 'none';
+  });
+  
+  // Details popups
+  document.querySelectorAll('.unreal-details-popup, .unreal-overlay-backdrop').forEach(el => {
+    el.remove();
+  });
+  
+  console.log(`[ShareSafe] Overlays ${visible ? 'shown' : 'hidden'}`);
+}
 
 // Check if extension is enabled
 (async function () {
@@ -20,12 +80,16 @@ let textDetectionEnabled = false;
   // Check if extension is enabled
   const settings = await chrome.storage.sync.get([
     'extensionEnabled',
+    'showOverlays',
     'segmentAnalysis',
     'imageAnalysis',
     'llmTiebreaker',
     'excludeList',
     'includeList'
   ]);
+  
+  // Set initial overlay visibility
+  overlaysVisible = settings.showOverlays !== false;
 
   // Check if extension is disabled
   if (settings.extensionEnabled === false) {
@@ -58,28 +122,51 @@ let textDetectionEnabled = false;
   // ═══════════════════════════════════════════════════════════════
   // TEXT DETECTION - Load Modules
   // ═══════════════════════════════════════════════════════════════
-  
+
   async function initTextDetection() {
     try {
+      console.log('[TextDetection] Initializing text detection...');
+
       // Load pattern database
       const patternModule = await import(chrome.runtime.getURL('patternDatabase.js'));
       patternDatabase = patternModule.AI_PHRASES;
-      
+      console.log('[TextDetection] Pattern database loaded, categories:', Object.keys(patternDatabase));
+
       // Load social media scanner
       const scannerModule = await import(chrome.runtime.getURL('socialMediaScanner.js'));
       socialMediaScanner = scannerModule;
+      console.log('[TextDetection] Social media scanner loaded');
+
+      // Load fake news detection modules (optional - we have built-in fallback)
+      try {
+        const extractorModule = await import(chrome.runtime.getURL('headlineExtractor.js'));
+        headlineExtractor = extractorModule;
+        console.log('[FakeNewsDetection] Headline extractor loaded');
+
+        const verifierModule = await import(chrome.runtime.getURL('newsVerifier.js'));
+        newsVerifier = verifierModule;
+        console.log('[FakeNewsDetection] News verifier loaded');
+      } catch (error) {
+        console.warn('[FakeNewsDetection] Optional modules not loaded, using built-in extraction:', error.message);
+      }
       
+      // Always enable fake news detection - we have built-in headline extraction and backend verification
+      fakeNewsDetectionEnabled = true;
+      console.log('[FakeNewsDetection] Fake news detection enabled');
+
       textDetectionEnabled = true;
       console.log('[TextDetection] Modules loaded successfully');
-      
+
       // Detect platform
       const platform = socialMediaScanner.detectPlatform();
-      if (platform !== 'generic') {
-        console.log('[TextDetection] Platform detected:', platform);
-        startSocialMediaScanning(platform);
-      }
+      console.log('[TextDetection] Platform detected:', platform);
+
+      // Start scanning for all platforms (including generic)
+      startSocialMediaScanning(platform);
+
     } catch (error) {
       console.error('[TextDetection] Failed to load modules:', error);
+      console.error('[TextDetection] Error stack:', error.stack);
       textDetectionEnabled = false;
     }
   }
@@ -90,25 +177,34 @@ let textDetectionEnabled = false;
 
   async function analyzeTextForAI(text) {
     if (!text || text.length < 50) return null;
-    
+
     try {
-      // Step 1: Pattern-based detection (fast, no API)
+      // Step 1: Pattern-based detection (fast, provides quick signals)
       const patternScore = checkTextPatterns(text);
-      
-      // Step 2: If score is inconclusive (40-60%), call ML backend
-      if (patternScore > 40 && patternScore < 60) {
-        const mlResult = await callTextDetectionAPI(text);
-        if (mlResult) {
-          return {
-            score: mlResult.ai_score,
-            confidence: mlResult.confidence,
-            method: 'ml',
-            details: mlResult
-          };
-        }
+
+      // Step 2: ALWAYS call ML backend for better accuracy
+      const mlResult = await callTextDetectionAPI(text);
+
+      if (mlResult && mlResult.ai_score !== undefined) {
+        // Combine ML score with pattern score for best accuracy
+        // ML is more reliable, so weight it higher (70% ML, 30% pattern)
+        const combinedScore = (mlResult.ai_score * 0.7) + (patternScore * 0.3);
+
+        console.log(`[TextDetection] Combined: ML=${mlResult.ai_score.toFixed(1)}%, Pattern=${patternScore.toFixed(1)}%, Final=${combinedScore.toFixed(1)}%`);
+
+        return {
+          score: combinedScore,
+          confidence: mlResult.confidence || 70,
+          method: 'ml+pattern',
+          details: {
+            mlScore: mlResult.ai_score,
+            patternScore: patternScore,
+            ...mlResult
+          }
+        };
       }
-      
-      // Return pattern-based result
+
+      // Fallback: Pattern-based result if ML unavailable
       return {
         score: patternScore,
         confidence: Math.min(70, Math.abs(patternScore - 50) * 2),
@@ -122,41 +218,73 @@ let textDetectionEnabled = false;
   }
 
   function checkTextPatterns(text) {
-    if (!patternDatabase) return 0;
-    
+    if (!patternDatabase) {
+      console.warn('[TextDetection] Pattern database not loaded');
+      return 0;
+    }
+
     let totalScore = 0;
     let matchCount = 0;
-    
-    // Check all pattern categories
-    for (const category in patternDatabase) {
-      const patterns = patternDatabase[category];
-      if (!Array.isArray(patterns)) continue;
-      
-      for (const phrase of patterns) {
-        if (phrase.pattern && phrase.pattern.test(text)) {
-          totalScore += phrase.score || 50;
-          matchCount++;
+
+    // Recursive function to process patterns at any depth
+    function processPatterns(patterns) {
+      if (!patterns) return;
+
+      if (Array.isArray(patterns)) {
+        // Array of pattern objects
+        for (const phrase of patterns) {
+          if (phrase.pattern && typeof phrase.pattern.test === 'function') {
+            try {
+              if (phrase.pattern.test(text)) {
+                totalScore += phrase.score || 50;
+                matchCount++;
+                console.log('[TextDetection] Pattern match:', phrase.msg || 'Unknown');
+              }
+            } catch (e) {
+              // Regex error, skip
+            }
+          }
+        }
+      } else if (typeof patterns === 'object') {
+        // Nested object (like domainSpecific.academic)
+        for (const key in patterns) {
+          processPatterns(patterns[key]);
         }
       }
     }
-    
+
+    // Process all categories
+    for (const category in patternDatabase) {
+      processPatterns(patternDatabase[category]);
+    }
+
     // Return average score if matches found, otherwise 0
-    return matchCount > 0 ? Math.min(100, totalScore / matchCount) : 0;
+    const result = matchCount > 0 ? Math.min(100, totalScore / matchCount) : 0;
+
+    if (matchCount > 0) {
+      console.log(`[TextDetection] Found ${matchCount} patterns, avg score: ${result.toFixed(1)}`);
+    }
+
+    return result;
   }
 
   async function callTextDetectionAPI(text) {
     try {
-      const response = await fetch('http://localhost:8001/detect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text })
+      // Use background script to bypass CORS/Private Network Access restrictions
+      const response = await chrome.runtime.sendMessage({
+        type: 'TEXT_BACKEND_REQUEST',
+        text: text
       });
-      
-      if (response.ok) {
-        const data = await response.json();
-        console.log('[TextDetection] ML API result:', data);
-        return data;
+
+      if (response && response.success && response.data) {
+        console.log('[TextDetection] ML API result:', response.data);
+        return response.data;
       }
+
+      if (response && response.error) {
+        console.warn('[TextDetection] ML API error:', response.error);
+      }
+
       return null;
     } catch (error) {
       console.warn('[TextDetection] ML API not available:', error.message);
@@ -170,20 +298,20 @@ let textDetectionEnabled = false;
 
   function startSocialMediaScanning(platform) {
     if (!socialMediaScanner) return;
-    
+
     const selectors = socialMediaScanner.PLATFORM_SELECTORS[platform];
     if (!selectors || selectors.length === 0) return;
-    
+
     console.log('[SocialScanner] Starting scan for platform:', platform);
-    
+
     // Scan existing content
     scanSocialMediaPosts(selectors);
-    
+
     // Watch for new posts
     const observer = new MutationObserver(() => {
       scanSocialMediaPosts(selectors);
     });
-    
+
     observer.observe(document.body, {
       childList: true,
       subtree: true
@@ -197,7 +325,7 @@ let textDetectionEnabled = false;
         elements.forEach(element => {
           // Skip if already processed
           if (element.dataset?.sharesafeTextProcessed === 'true') return;
-          
+
           const content = socialMediaScanner.extractPostContent(element);
           if (content && content.text && content.wordCount > 15) {
             analyzeTextForAI(content.text).then(result => {
@@ -219,7 +347,7 @@ let textDetectionEnabled = false;
     if (!element.style.position || element.style.position === 'static') {
       element.style.position = 'relative';
     }
-    
+
     const indicator = document.createElement('div');
     indicator.className = 'sharesafe-text-indicator';
     indicator.innerHTML = '🤖';
@@ -240,7 +368,7 @@ let textDetectionEnabled = false;
       z-index: 9999;
       box-shadow: 0 2px 4px rgba(0,0,0,0.2);
     `;
-    
+
     element.appendChild(indicator);
   }
 
@@ -345,6 +473,545 @@ let textDetectionEnabled = false;
     } catch (error) {
       console.error('ShareSafe: Segment analysis error:', error);
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // FAKE NEWS DETECTION ANALYSIS
+  // ═══════════════════════════════════════════════════════════════
+
+  // Backend URL for news verification
+  const NEWS_BACKEND_URL = 'http://localhost:8000';
+
+  /**
+   * Verify a headline using the backend Google search
+   */
+  async function verifyHeadlineWithBackend(headline) {
+    try {
+      const response = await fetch(`${NEWS_BACKEND_URL}/verify-news`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ headline: headline, max_results: 15 })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Backend returned ${response.status}`);
+      }
+      
+      return await response.json();
+    } catch (error) {
+      console.warn('[FakeNewsDetection] Backend verification failed:', error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Extract headlines from the current page
+   */
+  function extractPageHeadlines() {
+    const headlines = [];
+    
+    // Get main title
+    const pageTitle = document.title;
+    if (pageTitle && pageTitle.length > 15) {
+      // Clean up common suffixes
+      let cleanTitle = pageTitle.replace(/\s*[\|\-–—]\s*[^|\-–—]+$/, '').trim();
+      if (cleanTitle.length > 15) {
+        headlines.push({ text: cleanTitle, source: 'title', priority: 1 });
+      }
+    }
+    
+    // Get Open Graph title
+    const ogTitle = document.querySelector('meta[property="og:title"]')?.content;
+    if (ogTitle && ogTitle.length > 15) {
+      let cleanOg = ogTitle.replace(/\s*[\|\-–—]\s*[^|\-–—]+$/, '').trim();
+      if (cleanOg.length > 15 && !headlines.find(h => h.text === cleanOg)) {
+        headlines.push({ text: cleanOg, source: 'og:title', priority: 1 });
+      }
+    }
+    
+    // Get H1 headlines
+    document.querySelectorAll('h1').forEach(h1 => {
+      const text = h1.innerText?.trim();
+      if (text && text.length > 20 && text.length < 300) {
+        if (!headlines.find(h => h.text === text)) {
+          headlines.push({ text: text, source: 'h1', priority: 2 });
+        }
+      }
+    });
+    
+    // Get article headlines (common classes)
+    const articleSelectors = [
+      'article h2', '.article-title', '.entry-title', '.post-title',
+      '.headline', '[class*="headline"]', '[class*="title"]'
+    ];
+    
+    articleSelectors.forEach(selector => {
+      try {
+        document.querySelectorAll(selector).forEach(el => {
+          const text = el.innerText?.trim();
+          if (text && text.length > 20 && text.length < 300) {
+            if (!headlines.find(h => h.text === text)) {
+              headlines.push({ text: text, source: selector, priority: 3 });
+            }
+          }
+        });
+      } catch (e) {}
+    });
+    
+    // Sort by priority and return top headlines
+    return headlines.sort((a, b) => a.priority - b.priority).slice(0, 5);
+  }
+
+  async function analyzePageForFakeNews() {
+    console.log('[FakeNewsDetection] Starting fake news analysis...');
+
+    try {
+      const pageTitle = document.title || '';
+      const pageText = document.body?.innerText || '';
+      const pageUrl = location.href;
+
+      // Skip if content is too short
+      if (pageText.length < 200) {
+        console.log('[FakeNewsDetection] Content too short for analysis');
+        return null;
+      }
+
+      // Extract headlines from page
+      const extractedHeadlines = extractPageHeadlines();
+      console.log(`[FakeNewsDetection] Extracted ${extractedHeadlines.length} headlines`);
+      
+      if (extractedHeadlines.length === 0) {
+        console.log('[FakeNewsDetection] No headlines found');
+        return {
+          analyzed: true,
+          hasNewsContent: false,
+          riskLevel: 'none',
+          confidence: 0
+        };
+      }
+
+      // Try to verify the main headline with backend
+      let backendResult = null;
+      const mainHeadline = extractedHeadlines[0]?.text;
+      
+      if (mainHeadline) {
+        console.log(`[FakeNewsDetection] Verifying headline with backend: "${mainHeadline.substring(0, 50)}..."`);
+        backendResult = await verifyHeadlineWithBackend(mainHeadline);
+        
+        if (backendResult && backendResult.success) {
+          console.log('[FakeNewsDetection] Backend verification result:', backendResult.recommendation);
+        }
+      }
+
+      // Also do pattern-based analysis as fallback/supplement
+      const patternAnalysis = analyzeContentForMisinformation(pageText, pageTitle, { headlines: extractedHeadlines });
+      
+      // Combine results
+      let finalAnalysis;
+      
+      if (backendResult && backendResult.success) {
+        // Use backend result as primary, augment with pattern analysis
+        finalAnalysis = {
+          analyzed: true,
+          hasNewsContent: true,
+          method: 'google_search',
+          headline: mainHeadline,
+          verified: backendResult.verified,
+          riskLevel: mapRecommendationToRisk(backendResult.recommendation),
+          confidence: backendResult.confidence,
+          recommendation: backendResult.recommendation,
+          trustedSources: backendResult.trusted_sources || [],
+          unreliableSources: backendResult.unreliable_sources || [],
+          allSources: backendResult.all_sources || [],
+          reasoning: backendResult.reasoning || [],
+          cached: backendResult.cached,
+          patternAnalysis: {
+            misinfoScore: patternAnalysis.misinfoScore,
+            credibleScore: patternAnalysis.credibleScore,
+            flags: patternAnalysis.flags
+          }
+        };
+        
+        // If pattern analysis found strong red flags, add them
+        if (patternAnalysis.flags && patternAnalysis.flags.length > 0) {
+          finalAnalysis.reasoning.push(`Pattern analysis found: ${patternAnalysis.flags.join(', ')}`);
+        }
+      } else {
+        // Fall back to pattern analysis only
+        finalAnalysis = {
+          analyzed: true,
+          hasNewsContent: true,
+          method: 'pattern_analysis',
+          headline: mainHeadline,
+          verified: false,
+          riskLevel: patternAnalysis.riskLevel,
+          confidence: patternAnalysis.confidence,
+          recommendation: patternAnalysis.recommendation,
+          trustedSources: [],
+          unreliableSources: [],
+          allSources: [],
+          reasoning: [`Pattern-based analysis (backend unavailable)`, ...patternAnalysis.flags.map(f => `⚠ ${f}`)],
+          patternAnalysis: patternAnalysis
+        };
+      }
+
+      // Store results for popup
+      try {
+        chrome.runtime.sendMessage({
+          type: 'STORE_FAKE_NEWS_ANALYSIS',
+          data: {
+            ...finalAnalysis,
+            url: pageUrl,
+            extractedHeadlines: extractedHeadlines,
+            timestamp: Date.now()
+          }
+        });
+      } catch (msgError) {
+        console.warn('[FakeNewsDetection] Could not store results:', msgError);
+      }
+
+      // Show visual indicator on page for significant findings
+      // Show badge always for manipulated/false content (important warnings)
+      // For other cases, respect the overlay visibility setting
+      const isSignificant = ['likely_manipulated', 'likely_false', 'verified_true'].includes(finalAnalysis.recommendation);
+      if (overlaysVisible || isSignificant) {
+        showNewsVerificationBadge(finalAnalysis);
+      }
+
+      console.log('[FakeNewsDetection] Analysis complete:', finalAnalysis.recommendation);
+      
+      return finalAnalysis;
+
+    } catch (error) {
+      console.error('[FakeNewsDetection] Analysis error:', error);
+      return {
+        analyzed: true,
+        error: error.message,
+        riskLevel: 'unknown',
+        confidence: 0
+      };
+    }
+  }
+
+  /**
+   * Map backend recommendation to risk level
+   */
+  function mapRecommendationToRisk(recommendation) {
+    const mapping = {
+      'verified_true': 'low',
+      'likely_true': 'low',
+      'possibly_true': 'medium',
+      'unverified': 'medium',
+      'no_coverage': 'high',
+      'likely_false': 'high',
+      'error': 'unknown'
+    };
+    return mapping[recommendation] || 'unknown';
+  }
+
+  /**
+   * Pattern-based misinformation analysis (fallback when backend unavailable)
+   */
+  function analyzeContentForMisinformation(text, title, extractedContent) {
+    const combinedText = `${title} ${text}`.toLowerCase();
+    
+    // Misinformation patterns with weights
+    const misinfoPatterns = [
+      { pattern: /\b(shocking|bombshell|explosive|jaw.?dropping)\b/gi, weight: 15, flag: 'Sensationalist language' },
+      { pattern: /\b(they don'?t want you to know|what .+ don'?t want you to see|banned|censored)\b/gi, weight: 25, flag: 'Conspiracy framing' },
+      { pattern: /\b(exposed!?|revealed!?|leaked!?|cover.?up)\b/gi, weight: 12, flag: 'Exposé language' },
+      { pattern: /\b(secret|hidden truth|suppressed)\b/gi, weight: 15, flag: 'Conspiracy language' },
+      { pattern: /\b(miracle|cure[sd]?|breakthrough).{0,20}(cancer|covid|diabetes|disease)\b/gi, weight: 30, flag: 'Medical misinformation' },
+      { pattern: /\b(mainstream media|MSM|fake news media).{0,20}(won'?t|refuses?|hiding)\b/gi, weight: 25, flag: 'Media conspiracy' },
+      { pattern: /\b(big pharma|government coverup|deep state|new world order)\b/gi, weight: 30, flag: 'Conspiracy theory' },
+      { pattern: /\b(100%|guaranteed|proven|scientifically proven).{0,10}(cure|works|effective)\b/gi, weight: 20, flag: 'Unverifiable claims' },
+      { pattern: /\b(doctors hate|scientists baffled|experts stunned)\b/gi, weight: 25, flag: 'Clickbait language' },
+      { pattern: /\b(share before.{0,10}deleted|going viral|must see|act now)\b/gi, weight: 18, flag: 'Urgency manipulation' },
+      { pattern: /\b(wake up|sheeple|open your eyes|truth they)\b/gi, weight: 20, flag: 'Conspiracy rhetoric' },
+      { pattern: /\bDO YOUR (OWN )?RESEARCH\b/gi, weight: 15, flag: 'Anti-expertise stance' },
+      { pattern: /\b(illuminati|rothschild|soros|gates).{0,20}(control|plan|agenda)\b/gi, weight: 30, flag: 'Conspiracy theory' },
+      { pattern: /\b(plandemic|scamdemic|hoax)\b/gi, weight: 35, flag: 'Misinformation term' }
+    ];
+
+    // Credibility patterns
+    const crediblePatterns = [
+      { pattern: /\b(according to|as reported by|sources (say|confirm))\b/gi, weight: 12 },
+      { pattern: /\b(study|research|analysis).{0,15}(published|conducted|found|shows)\b/gi, weight: 15 },
+      { pattern: /\b(researchers|scientists|experts|officials).{0,10}(say|report|confirm|found)\b/gi, weight: 12 },
+      { pattern: /\b(university|institute|journal|peer.?reviewed)\b/gi, weight: 10 },
+      { pattern: /\b(data shows?|statistics indicate|evidence suggests?)\b/gi, weight: 10 },
+      { pattern: /\b(reuters|associated press|ap news|bbc|npr|official)\b/gi, weight: 15 },
+      { pattern: /\b(spokesperson|press (release|secretary)|statement)\b/gi, weight: 10 }
+    ];
+
+    let misinfoScore = 0;
+    let credibleScore = 0;
+    const flags = [];
+
+    // Check misinformation patterns
+    for (const { pattern, weight, flag } of misinfoPatterns) {
+      const matches = combinedText.match(pattern);
+      if (matches) {
+        misinfoScore += weight * Math.min(matches.length, 3);
+        if (flag && !flags.includes(flag)) flags.push(flag);
+      }
+    }
+
+    // Check credible patterns
+    for (const { pattern, weight } of crediblePatterns) {
+      const matches = combinedText.match(pattern);
+      if (matches) {
+        credibleScore += weight * Math.min(matches.length, 3);
+      }
+    }
+
+    // Determine risk level
+    let riskLevel, confidence, summary;
+
+    if (misinfoScore >= 60) {
+      riskLevel = 'high';
+      confidence = Math.min(90, 50 + misinfoScore);
+      summary = 'Multiple misinformation indicators detected';
+    } else if (misinfoScore >= 30) {
+      riskLevel = 'medium-high';
+      confidence = Math.min(75, 40 + misinfoScore);
+      summary = 'Some misinformation indicators present';
+    } else if (misinfoScore >= 15 && credibleScore < 20) {
+      riskLevel = 'medium';
+      confidence = Math.min(60, 30 + misinfoScore);
+      summary = 'Potentially misleading content';
+    } else if (credibleScore >= 30) {
+      riskLevel = 'low';
+      confidence = Math.min(75, 40 + credibleScore);
+      summary = 'Content appears to use credible sourcing patterns';
+    } else {
+      riskLevel = 'unknown';
+      confidence = 30;
+      summary = 'Insufficient patterns for automated analysis';
+    }
+
+    return {
+      analyzed: true,
+      hasNewsContent: (extractedContent?.metadata?.totalExtracted || 0) > 0,
+      riskLevel,
+      confidence,
+      summary,
+      flags,
+      details: {
+        misinfoScore,
+        credibleScore,
+        extractedItems: extractedContent?.metadata?.totalExtracted || 0
+      }
+    };
+  }
+
+  /**
+   * Show a floating badge on the page with news verification result
+   */
+  function showNewsVerificationBadge(analysis) {
+    // Remove existing badge if any
+    const existingBadge = document.getElementById('sharesafe-news-badge');
+    if (existingBadge) existingBadge.remove();
+
+    // Only show for meaningful results
+    if (!analysis || !analysis.recommendation) return;
+
+    // Determine badge style based on recommendation
+    let bgColor, icon, text;
+    switch (analysis.recommendation) {
+      case 'verified_true':
+        bgColor = '#22c55e'; // green
+        icon = '✓';
+        text = 'Verified News';
+        break;
+      case 'likely_true':
+        bgColor = '#22c55e';
+        icon = '✓';
+        text = 'Likely True';
+        break;
+      case 'possibly_true':
+        bgColor = '#3b82f6'; // blue
+        icon = '○';
+        text = 'Possibly True';
+        break;
+      case 'likely_manipulated':
+        bgColor = '#ef4444'; // red
+        icon = '🚨';
+        text = 'Manipulation Detected!';
+        break;
+      case 'likely_false':
+        bgColor = '#ef4444';
+        icon = '⚠';
+        text = 'Likely False';
+        break;
+      case 'no_coverage':
+        bgColor = '#f59e0b'; // amber
+        icon = '?';
+        text = 'No News Coverage';
+        break;
+      default:
+        bgColor = '#6b7280'; // gray
+        icon = 'ℹ';
+        text = 'Unverified';
+    }
+
+    // Create badge element
+    const badge = document.createElement('div');
+    badge.id = 'sharesafe-news-badge';
+    badge.innerHTML = `
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="font-size: 18px;">${icon}</span>
+        <div>
+          <div style="font-weight: 600; font-size: 13px;">${text}</div>
+          <div style="font-size: 11px; opacity: 0.9;">${analysis.confidence}% confidence</div>
+        </div>
+        <button id="sharesafe-badge-close" style="
+          background: none;
+          border: none;
+          color: white;
+          font-size: 18px;
+          cursor: pointer;
+          padding: 0 4px;
+          opacity: 0.7;
+        ">×</button>
+      </div>
+      ${analysis.trustedSources?.length > 0 ? `
+        <div style="font-size: 10px; margin-top: 6px; opacity: 0.85;">
+          Found in: ${analysis.trustedSources.slice(0, 3).map(s => s.domain).join(', ')}
+          ${analysis.trustedSources.length > 3 ? ` +${analysis.trustedSources.length - 3} more` : ''}
+        </div>
+      ` : ''}
+    `;
+
+    badge.style.cssText = `
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      background: ${bgColor};
+      color: white;
+      padding: 12px 16px;
+      border-radius: 10px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+      z-index: 2147483647;
+      max-width: 300px;
+      cursor: pointer;
+      transition: transform 0.2s, opacity 0.2s;
+    `;
+
+    // Add hover effect
+    badge.addEventListener('mouseenter', () => {
+      badge.style.transform = 'scale(1.02)';
+    });
+    badge.addEventListener('mouseleave', () => {
+      badge.style.transform = 'scale(1)';
+    });
+
+    // Close button
+    badge.addEventListener('click', (e) => {
+      if (e.target.id === 'sharesafe-badge-close') {
+        badge.style.opacity = '0';
+        setTimeout(() => badge.remove(), 200);
+      }
+    });
+
+    document.body.appendChild(badge);
+
+    // Auto-hide after 10 seconds for verified/likely true
+    if (['verified_true', 'likely_true'].includes(analysis.recommendation)) {
+      setTimeout(() => {
+        if (badge.parentNode) {
+          badge.style.opacity = '0';
+          setTimeout(() => badge.remove(), 200);
+        }
+      }, 10000);
+    }
+  }
+
+  /**
+   * Analyze fake news verification results (legacy - kept for compatibility)
+   */
+  function analyzeFakeNewsResults(extractedContent, verificationResults) {
+    const analysis = {
+      analyzed: true,
+      hasNewsContent: true,
+      hasVerifiableClaims: true,
+      extractedContent: extractedContent,
+      verificationResults: verificationResults,
+      riskLevel: 'unknown',
+      confidence: 0,
+      summary: '',
+      details: {
+        totalClaims: verificationResults.length,
+        verifiedClaims: 0,
+        likelyTrueClaims: 0,
+        likelyFalseClaims: 0,
+        unverifiedClaims: 0,
+        trustedSourceCount: 0,
+        unreliableSourceCount: 0
+      },
+      flags: []
+    };
+
+    // Count verification outcomes
+    for (const result of verificationResults) {
+      if (result.verified && result.confidence >= 60) {
+        analysis.details.verifiedClaims++;
+        if (result.recommendation === 'likely_true') {
+          analysis.details.likelyTrueClaims++;
+        } else if (result.recommendation === 'likely_false') {
+          analysis.details.likelyFalseClaims++;
+        }
+      } else {
+        analysis.details.unverifiedClaims++;
+      }
+
+      // Count source quality
+      if (result.sources) {
+        analysis.details.trustedSourceCount += 
+          (result.sources.tier1 || []).length + 
+          (result.sources.tier2 || []).length + 
+          (result.sources.tier3 || []).length;
+        analysis.details.unreliableSourceCount += (result.sources.unreliable || []).length;
+      }
+    }
+
+    // Determine overall risk level
+    const falseRatio = analysis.details.likelyFalseClaims / Math.max(1, analysis.details.totalClaims);
+    const verifiedRatio = analysis.details.verifiedClaims / Math.max(1, analysis.details.totalClaims);
+    const misinformationRisk = extractedContent.metadata.misinformationRisk || 0;
+
+    if (analysis.details.likelyFalseClaims >= 2 || falseRatio >= 0.5) {
+      analysis.riskLevel = 'high';
+      analysis.confidence = 80;
+      analysis.summary = 'Multiple false claims detected';
+      analysis.flags.push('Multiple unverified or false claims');
+    } else if (analysis.details.unreliableSourceCount > analysis.details.trustedSourceCount) {
+      analysis.riskLevel = 'medium-high';
+      analysis.confidence = 70;
+      analysis.summary = 'Primarily unreliable sources';
+      analysis.flags.push('Content mainly from unreliable sources');
+    } else if (misinformationRisk >= 60) {
+      analysis.riskLevel = 'medium-high';
+      analysis.confidence = 65;
+      analysis.summary = 'Language patterns suggest misinformation';
+      analysis.flags.push('Contains misinformation language patterns');
+    } else if (verifiedRatio >= 0.6 && analysis.details.trustedSourceCount >= 2) {
+      analysis.riskLevel = 'low';
+      analysis.confidence = 75;
+      analysis.summary = 'Claims verified by trusted sources';
+    } else if (analysis.details.verifiedClaims >= 1) {
+      analysis.riskLevel = 'medium';
+      analysis.confidence = 50;
+      analysis.summary = 'Some claims verified, others uncertain';
+    } else {
+      analysis.riskLevel = 'medium';
+      analysis.confidence = 40;
+      analysis.summary = 'Claims could not be verified';
+      analysis.flags.push('Unable to verify claims with trusted sources');
+    }
+
+    return analysis;
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -1718,11 +2385,526 @@ let textDetectionEnabled = false;
   // Cleanup on page unload
   window.addEventListener('beforeunload', () => {
     imageScanner?.destroy();
+    videoScanner?.destroy();
   });
+  // ═══════════════════════════════════════════════════════════════
+  // VIDEO SCANNER CLASS - Button-triggered Backend Video Analysis
+  // ═══════════════════════════════════════════════════════════════
+
+  class VideoScanner {
+    constructor() {
+      this.checkedVideos = new Set();
+      this.analysisResults = new Map();
+      this.mutationObserver = null;
+      this.isEnabled = true;
+      this.backendUrl = 'http://localhost:8000/analyze-video';
+      this.minWidth = 200;
+      this.minHeight = 150;
+      this.minDuration = 2;
+    }
+
+    async init() {
+      console.log('[VideoScanner] Initializing (button mode)...');
+      this.injectStyles();
+      this.observeNewVideos();
+      this.scanExistingVideos();
+      console.log('[VideoScanner] Initialized - click button to analyze videos');
+    }
+
+    injectStyles() {
+      if (document.getElementById('unreal-video-scanner-styles')) return;
+      const style = document.createElement('style');
+      style.id = 'unreal-video-scanner-styles';
+      style.textContent = `
+        /* Analyze button on videos */
+        .unreal-video-analyze-btn {
+          position: absolute !important;
+          top: 8px !important;
+          left: 8px !important;
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+          color: white !important;
+          padding: 8px 14px !important;
+          border-radius: 20px !important;
+          font-size: 11px !important;
+          font-weight: 600 !important;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+          z-index: 999999 !important;
+          cursor: pointer !important;
+          display: flex !important;
+          align-items: center !important;
+          gap: 6px !important;
+          border: none !important;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.3) !important;
+          transition: transform 0.2s, box-shadow 0.2s !important;
+        }
+        .unreal-video-analyze-btn:hover {
+          transform: scale(1.05) !important;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.4) !important;
+        }
+        .unreal-video-analyze-btn.analyzing {
+          background: rgba(0,0,0,0.75) !important;
+          pointer-events: none !important;
+        }
+        .unreal-video-analyze-btn.analyzing::after {
+          content: '';
+          width: 12px;
+          height: 12px;
+          border: 2px solid rgba(255,255,255,0.3);
+          border-top-color: white;
+          border-radius: 50%;
+          animation: unreal-vid-spin 0.8s linear infinite;
+          margin-left: 6px;
+        }
+        /* Result badge */
+        .unreal-video-badge {
+          position: absolute !important;
+          top: 8px !important;
+          left: 8px !important;
+          background: rgba(0,0,0,0.85) !important;
+          backdrop-filter: blur(10px) !important;
+          color: white !important;
+          padding: 6px 10px !important;
+          border-radius: 8px !important;
+          font-size: 11px !important;
+          font-weight: 600 !important;
+          z-index: 999999 !important;
+          cursor: pointer !important;
+          display: flex !important;
+          align-items: center !important;
+          gap: 6px !important;
+          pointer-events: auto !important;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+        }
+        .unreal-video-badge.high-risk { border-left: 3px solid #ef4444 !important; }
+        .unreal-video-badge.medium-risk { border-left: 3px solid #f97316 !important; }
+        .unreal-video-badge.low-risk { border-left: 3px solid #22c55e !important; }
+        @keyframes unreal-vid-spin {
+          to { transform: rotate(360deg); }
+        }
+      `;
+      document.head.appendChild(style);
+    }
+
+    scanExistingVideos() {
+      const videos = document.querySelectorAll('video');
+      console.log('[VideoScanner] Found', videos.length, 'videos');
+      videos.forEach(v => this.addAnalyzeButton(v));
+    }
+
+    observeNewVideos() {
+      this.mutationObserver = new MutationObserver((mutations) => {
+        for (const m of mutations) {
+          for (const node of m.addedNodes) {
+            if (node.nodeName === 'VIDEO') this.addAnalyzeButton(node);
+            else if (node.querySelectorAll) {
+              node.querySelectorAll('video').forEach(v => this.addAnalyzeButton(v));
+            }
+          }
+        }
+      });
+      this.mutationObserver.observe(document.body, { childList: true, subtree: true });
+    }
+
+    addAnalyzeButton(video) {
+      if (!this.isEnabled) return;
+
+      const id = video.src || video.currentSrc || '';
+      if (!id || this.checkedVideos.has(id)) return;
+
+      // Wait for metadata if not ready
+      if (video.readyState < 1) {
+        video.addEventListener('loadedmetadata', () => this.addAnalyzeButton(video), { once: true });
+        return;
+      }
+
+      const w = video.videoWidth || video.clientWidth;
+      const h = video.videoHeight || video.clientHeight;
+      const d = video.duration || 0;
+
+      if (w < this.minWidth || h < this.minHeight || d < this.minDuration || !isFinite(d)) return;
+
+      this.checkedVideos.add(id);
+
+      // Get video container
+      const parent = video.parentElement;
+      if (!parent) return;
+
+      // Ensure parent has position
+      const computedStyle = getComputedStyle(parent);
+      if (computedStyle.position === 'static') {
+        parent.style.position = 'relative';
+      }
+
+      // Remove existing buttons/badges
+      parent.querySelectorAll('.unreal-video-analyze-btn, .unreal-video-badge').forEach(el => el.remove());
+
+      // Create analyze button
+      const btn = document.createElement('button');
+      btn.className = 'unreal-video-analyze-btn';
+      btn.innerHTML = '🔍 <span>Check AI</span>';
+      btn.title = 'Click to analyze this video for AI generation';
+      btn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.analyzeVideo(video, btn);
+      };
+
+      parent.appendChild(btn);
+    }
+
+    /**
+     * Get the actual downloadable URL for a video
+     * For Twitter/X, blob URLs need to be converted to tweet URLs
+     */
+    getDownloadableUrl(video) {
+      const videoUrl = video.src || video.currentSrc || '';
+
+      // If it's a normal HTTP URL, use it directly
+      if (videoUrl.startsWith('http://') || videoUrl.startsWith('https://')) {
+        return videoUrl;
+      }
+
+      // For blob URLs (Twitter/X), try to find the tweet/post URL
+      if (videoUrl.startsWith('blob:')) {
+        // Method 1: Check current page URL (if on a single tweet)
+        const pageUrl = window.location.href;
+        if (pageUrl.includes('/status/')) {
+          console.log('[VideoScanner] Using page URL for blob video:', pageUrl);
+          return pageUrl;
+        }
+
+        // Method 2: Find the closest tweet container and get its link
+        const article = video.closest('article');
+        if (article) {
+          // Look for the tweet permalink
+          const timeLink = article.querySelector('a[href*="/status/"] time')?.closest('a');
+          if (timeLink && timeLink.href) {
+            console.log('[VideoScanner] Found tweet URL:', timeLink.href);
+            return timeLink.href;
+          }
+
+          // Alternative: any link with /status/
+          const statusLink = article.querySelector('a[href*="/status/"]');
+          if (statusLink && statusLink.href && statusLink.href.includes('/status/')) {
+            console.log('[VideoScanner] Found status link:', statusLink.href);
+            return statusLink.href;
+          }
+        }
+
+        // Method 3: For embedded videos, current page might work
+        if (pageUrl.includes('twitter.com') || pageUrl.includes('x.com')) {
+          console.log('[VideoScanner] Using current page as fallback:', pageUrl);
+          return pageUrl;
+        }
+      }
+
+      return null;
+    }
+
+    async analyzeVideo(video, btn) {
+      const downloadUrl = this.getDownloadableUrl(video);
+
+      if (!downloadUrl) {
+        this.showErrorBadge(video, 'Could not find video URL');
+        return;
+      }
+
+      console.log('[VideoScanner] Analyzing video via backend:', downloadUrl.substring(0, 80) + '...');
+
+      // Update button to show analyzing state
+      btn.classList.add('analyzing');
+      btn.innerHTML = '<span>Analyzing...</span>';
+
+      try {
+        // Send URL to backend for analysis
+        const response = await fetch(this.backendUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: downloadUrl, max_duration: 30 })
+        });
+
+        if (!response.ok) {
+          throw new Error(`Backend error: ${response.status}`);
+        }
+
+        const result = await response.json();
+
+        console.log('[VideoScanner] Backend result:', result);
+
+        // Remove button
+        btn.remove();
+
+        if (result.success) {
+          this.showBadge(video, result);
+          this.analysisResults.set(downloadUrl, result);
+        } else {
+          this.showErrorBadge(video, result.error || 'Analysis failed');
+        }
+
+      } catch (error) {
+        console.error('[VideoScanner] Backend error:', error);
+        btn.classList.remove('analyzing');
+        btn.innerHTML = '❌ <span>Error</span>';
+        btn.title = error.message;
+
+        // Show error badge after delay
+        setTimeout(() => {
+          btn.remove();
+          this.showErrorBadge(video, error.message || 'Backend unavailable');
+        }, 2000);
+      }
+    }
+
+    showBadge(video, result) {
+      const parent = video.parentElement;
+      if (!parent) return;
+
+      parent.querySelectorAll('.unreal-video-badge, .unreal-video-analyze-btn').forEach(b => b.remove());
+
+      const computedStyle = getComputedStyle(parent);
+      if (computedStyle.position === 'static') {
+        parent.style.position = 'relative';
+      }
+
+      const { score, confidence, framesAnalyzed, processingTime } = result;
+
+      // Determine risk level based on score
+      let riskLevel, icon, label, cls;
+      if (score >= 75) {
+        riskLevel = 'high';
+        icon = '🎬';
+        label = `AI Video ${score}%`;
+        cls = 'high-risk';
+      } else if (score >= 40) {
+        riskLevel = 'medium';
+        icon = '🎬';
+        label = `Maybe AI ${score}%`;
+        cls = 'medium-risk';
+      } else {
+        riskLevel = 'low';
+        icon = '✓';
+        label = `Real ${score}%`;
+        cls = 'low-risk';
+      }
+
+      const badge = document.createElement('div');
+      badge.className = `unreal-video-badge ${cls}`;
+      badge.innerHTML = `<span>${icon}</span><span>${label}</span>`;
+      badge.title = `Score: ${score}%\nConfidence: ${confidence}%\nFrames analyzed: ${framesAnalyzed}\nTime: ${processingTime}ms`;
+
+      badge.onclick = (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        this.showVideoDetails(video, result, riskLevel);
+      };
+
+      parent.appendChild(badge);
+    }
+
+    showVideoDetails(video, result, riskLevel) {
+      // Remove existing popup
+      document.getElementById('unreal-details-popup')?.remove();
+      document.querySelector('.unreal-overlay-backdrop')?.remove();
+
+      // Create backdrop
+      const backdrop = document.createElement('div');
+      backdrop.className = 'unreal-overlay-backdrop';
+      backdrop.addEventListener('click', () => {
+        document.getElementById('unreal-details-popup')?.remove();
+        backdrop.remove();
+      });
+      document.body.appendChild(backdrop);
+
+      // Create popup
+      const popup = document.createElement('div');
+      popup.className = 'unreal-details-popup';
+      popup.id = 'unreal-details-popup';
+
+      // Position popup in center of viewport
+      const videoRect = video.getBoundingClientRect();
+      let top = videoRect.top;
+      let left = videoRect.right + 10;
+
+      if (left + 380 > window.innerWidth) {
+        left = videoRect.left - 390;
+        if (left < 10) {
+          left = (window.innerWidth - 380) / 2;
+          top = (window.innerHeight - 500) / 2;
+        }
+      }
+      if (top + 500 > window.innerHeight) top = window.innerHeight - 510;
+      if (top < 10) top = 10;
+      if (left < 10) left = 10;
+
+      popup.style.top = `${top}px`;
+      popup.style.left = `${left}px`;
+
+      const { score, confidence, framesAnalyzed, processingTime, frameScores, cached, audioScore, audioConfidence, audioIndicators, hasAudio } = result;
+
+      const riskText = {
+        high: 'High Risk - Likely AI Generated',
+        medium: 'Medium Risk - Possibly AI Generated',
+        low: 'Low Risk - Likely Authentic'
+      };
+
+      const riskIcon = riskLevel === 'high' ? '🔴' : riskLevel === 'medium' ? '🟡' : '🟢';
+
+      // Build frame scores HTML
+      let frameScoresHtml = '<p style="color: #6b7280; font-style: italic;">No frame data available</p>';
+      if (frameScores && frameScores.length > 0) {
+        frameScoresHtml = `<div style="display: flex; flex-wrap: wrap; gap: 6px;">
+          ${frameScores.map(f => `
+            <span class="unreal-signal-tag" style="font-size: 10px;">
+              ${f.time}s: ${f.score}%
+            </span>
+          `).join('')}
+        </div>`;
+      }
+
+      // Build audio analysis section HTML
+      let audioSectionHtml = '';
+      if (hasAudio && audioScore !== null && audioScore !== undefined) {
+        const audioRiskClass = audioScore >= 70 ? 'high' : audioScore >= 40 ? 'medium' : 'low';
+        const audioIndicatorsHtml = audioIndicators && audioIndicators.length > 0
+          ? audioIndicators.map(ind => `<span class="unreal-signal-tag" style="font-size: 10px;">${ind}</span>`).join('')
+          : '<span style="color: #6b7280; font-style: italic;">No specific patterns detected</span>';
+
+        audioSectionHtml = `
+          <div class="unreal-details-section" style="border-top: 1px solid rgba(255,255,255,0.1); padding-top: 12px; margin-top: 8px;">
+            <div class="unreal-details-label">🔊 Audio Analysis</div>
+            <div class="unreal-details-value">
+              <div style="margin-bottom: 8px;">
+                <strong style="font-size: 18px;">${audioScore}</strong>/100 AI Voice Score
+                <span style="opacity: 0.7; margin-left: 8px;">(${audioConfidence}% confidence)</span>
+              </div>
+              <div class="unreal-confidence-bar" style="height: 6px;">
+                <div class="unreal-confidence-fill ${audioRiskClass}" style="width: ${audioScore}%;"></div>
+              </div>
+            </div>
+          </div>
+          <div class="unreal-details-section">
+            <div class="unreal-details-label">Voice Indicators</div>
+            <div class="unreal-details-value" style="display: flex; flex-wrap: wrap; gap: 6px;">
+              ${audioIndicatorsHtml}
+            </div>
+          </div>
+        `;
+      } else {
+        audioSectionHtml = `
+          <div class="unreal-details-section" style="border-top: 1px solid rgba(255,255,255,0.1); padding-top: 12px; margin-top: 8px;">
+            <div class="unreal-details-label">🔊 Audio Analysis</div>
+            <div class="unreal-details-value" style="color: #6b7280; font-style: italic;">
+              No audio track detected or audio service unavailable
+            </div>
+          </div>
+        `;
+      }
+
+      popup.innerHTML = `
+        <div class="unreal-details-header ${riskLevel}-risk">
+          <span style="font-size: 24px;">${riskIcon}</span>
+          <h3 class="unreal-details-title">${riskText[riskLevel]}</h3>
+          <button class="unreal-details-close" onclick="document.getElementById('unreal-details-popup')?.remove(); document.querySelector('.unreal-overlay-backdrop')?.remove();">×</button>
+        </div>
+        
+        <div class="unreal-details-content">
+          <div class="unreal-details-section">
+            <div class="unreal-details-label">Combined AI Score</div>
+            <div class="unreal-details-value">
+              <strong style="font-size: 24px;">${score}</strong>/100
+              <div class="unreal-confidence-bar">
+                <div class="unreal-confidence-fill ${riskLevel}" style="width: ${score}%;"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="unreal-details-section">
+            <div class="unreal-details-label">Confidence</div>
+            <div class="unreal-details-value">${confidence}%</div>
+          </div>
+
+          <div class="unreal-details-section">
+            <div class="unreal-details-label">Analysis Details</div>
+            <div class="unreal-details-value">
+              <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+                <span class="unreal-source-tag">🎞️ ${framesAnalyzed} frames</span>
+                <span class="unreal-source-tag">⏱️ ${processingTime}ms</span>
+                ${cached ? '<span class="unreal-source-tag">💾 Cached</span>' : ''}
+                ${hasAudio ? '<span class="unreal-source-tag">🔊 Audio Analyzed</span>' : ''}
+              </div>
+            </div>
+          </div>
+
+          <div class="unreal-details-section">
+            <div class="unreal-details-label">Frame-by-Frame Scores</div>
+            <div class="unreal-details-value">${frameScoresHtml}</div>
+          </div>
+
+          ${audioSectionHtml}
+
+          <div class="unreal-details-section">
+            <div class="unreal-details-label">Detection Methods</div>
+            <div class="unreal-sources-list">
+              <span class="unreal-source-tag">ML Backend</span>
+              <span class="unreal-source-tag">Frame Extraction</span>
+              <span class="unreal-source-tag">Video Analysis</span>
+              ${hasAudio ? '<span class="unreal-source-tag">Audio Spectral Analysis</span>' : ''}
+            </div>
+          </div>
+        </div>
+
+        <button class="unreal-dismiss-btn" onclick="document.getElementById('unreal-details-popup')?.remove(); document.querySelector('.unreal-overlay-backdrop')?.remove();">
+          Dismiss
+        </button>
+      `;
+
+      document.body.appendChild(popup);
+    }
+
+    showErrorBadge(video, errorMsg = 'Error') {
+      const parent = video.parentElement;
+      if (!parent) return;
+
+      const computedStyle = getComputedStyle(parent);
+      if (computedStyle.position === 'static') {
+        parent.style.position = 'relative';
+      }
+
+      parent.querySelectorAll('.unreal-video-badge, .unreal-video-analyze-btn').forEach(b => b.remove());
+
+      const badge = document.createElement('div');
+      badge.className = 'unreal-video-badge';
+      badge.style.borderLeft = '3px solid #6b7280';
+      badge.innerHTML = '<span>⚠️</span><span>Error</span>';
+      badge.title = errorMsg;
+      badge.onclick = () => alert(`Video Analysis Error\n\n${errorMsg}`);
+      parent.appendChild(badge);
+    }
+
+    destroy() {
+      this.mutationObserver?.disconnect();
+      document.querySelectorAll('.unreal-video-badge, .unreal-video-analyze-btn').forEach(el => el.remove());
+      console.log('[VideoScanner] Destroyed');
+    }
+  }
+
+  let videoScanner = null;
+
+  async function analyzePageVideos() {
+    const enabled = settings.imageAnalysis !== false;
+    if (!enabled) { console.log('[VideoScanner] Disabled'); return; }
+    console.log('[VideoScanner] Starting...');
+    try {
+      videoScanner = new VideoScanner();
+      await videoScanner.init();
+    } catch (e) { console.error('[VideoScanner] Init failed:', e); }
+  }
+
 
   // ═══════════════════════════════════════════════════════════════
   // FLOATING BADGE
   // ═══════════════════════════════════════════════════════════════
+
 
   let badgeContainer = null;
 
@@ -1819,7 +3001,7 @@ let textDetectionEnabled = false;
   function init() {
     // Initialize text detection first
     initTextDetection();
-    
+
     // Floating badge disabled - use popup instead
     // createFloatingBadge();
 
@@ -1827,12 +3009,25 @@ let textDetectionEnabled = false;
     setTimeout(async () => {
       await analyzePageWithSegments();
 
+      // Run fake news analysis in parallel with other analyses
+      if (fakeNewsDetectionEnabled) {
+        setTimeout(async () => {
+          await analyzePageForFakeNews();
+        }, 500); // Start fake news analysis 500ms after segment analysis
+      }
+
       // Run image analysis after text analysis
       setTimeout(() => {
         analyzePageImages();
+
+        // Run video analysis after image analysis
+        setTimeout(() => {
+          analyzePageVideos();
+        }, 2000);
       }, 1000);
     }, 1000);
   }
+
 
   // Wait for DOM ready
   if (document.readyState === 'loading') {

@@ -1,14 +1,12 @@
-// ShareSafe Settings Script
+// ShareSafe Settings Script v2.5 - Fixed Cache Management
 
 document.addEventListener('DOMContentLoaded', async () => {
   const apiKeyInput = document.getElementById('api-key');
-  const sightengineUserInput = document.getElementById('sightengine-user');
-  const sightengineSecretInput = document.getElementById('sightengine-secret');
   const saveBtn = document.getElementById('save-btn');
   const statusMsg = document.getElementById('status-msg');
   const currentKeyDiv = document.getElementById('current-key');
   const maskedKeySpan = document.getElementById('masked-key');
-  
+
   // New settings controls
   const enabledToggle = document.getElementById('enabled-toggle');
   const segmentAnalysisToggle = document.getElementById('segment-analysis-toggle');
@@ -18,7 +16,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const includeListTextarea = document.getElementById('include-list');
   const clearCacheBtn = document.getElementById('clear-cache-btn');
   const cacheStatsDiv = document.getElementById('cache-stats');
-  
+
   // Add LLM status indicator
   const llmStatusDiv = document.createElement('div');
   llmStatusDiv.id = 'llm-status';
@@ -34,8 +32,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   try {
     const data = await chrome.storage.sync.get([
       'geminiApiKey',
-      'sightengineUser',
-      'sightengineSecret',
       'extensionEnabled',
       'segmentAnalysis',
       'imageAnalysis',
@@ -43,14 +39,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       'excludeList',
       'includeList'
     ]);
-    
+
     // API Key
     if (data.geminiApiKey) {
       const key = data.geminiApiKey;
       const masked = '••••••••' + key.slice(-4);
       maskedKeySpan.textContent = masked;
       currentKeyDiv.style.display = 'block';
-      
+
       // Show LLM available status
       llmStatusDiv.style.background = '#dcfce7';
       llmStatusDiv.style.color = '#16a34a';
@@ -61,34 +57,26 @@ document.addEventListener('DOMContentLoaded', async () => {
       llmStatusDiv.style.color = '#3b82f6';
       llmStatusDiv.innerHTML = '📊 Statistical Analysis Mode - Works great without API key!';
     }
-    
-    // Sightengine Credentials
-    if (data.sightengineUser) {
-      sightengineUserInput.value = data.sightengineUser;
-    }
-    if (data.sightengineSecret) {
-      sightengineSecretInput.value = data.sightengineSecret;
-    }
-    
+
     // Insert status after save button
     saveBtn.parentElement.insertBefore(llmStatusDiv, saveBtn.nextSibling);
-    
+
     // Extension enabled (default: true)
     enabledToggle.checked = data.extensionEnabled !== false;
-    
+
     // Segment analysis (default: true)
     segmentAnalysisToggle.checked = data.segmentAnalysis !== false;
-    
+
     // Image analysis (default: true)
     imageAnalysisToggle.checked = data.imageAnalysis !== false;
-    
+
     // LLM tiebreaker (default: false - only use when uncertain)
     llmTiebreakerToggle.checked = data.llmTiebreaker === true;
-    
+
     // Exclude/Include lists
     excludeListTextarea.value = (data.excludeList || []).join('\n');
     includeListTextarea.value = (data.includeList || []).join('\n');
-    
+
   } catch (e) {
     console.error('Error loading settings:', e);
   }
@@ -99,8 +87,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Save API Key
   saveBtn.addEventListener('click', async () => {
     const key = apiKeyInput.value.trim();
-    const sightengineUser = sightengineUserInput.value.trim();
-    const sightengineSecret = sightengineSecretInput.value.trim();
 
     // Validate Gemini API key if provided
     if (key && key.length < 20) {
@@ -110,33 +96,27 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     try {
       const dataToSave = {};
-      
+
       // Save Gemini API key if provided
       if (key) {
         dataToSave.geminiApiKey = key;
       }
-      
-      // Save Sightengine credentials if both provided
-      if (sightengineUser && sightengineSecret) {
-        dataToSave.sightengineUser = sightengineUser;
-        dataToSave.sightengineSecret = sightengineSecret;
-      }
-      
+
       await chrome.storage.sync.set(dataToSave);
-      
+
       // Update UI for Gemini key
       if (key) {
         const masked = '••••••••' + key.slice(-4);
         maskedKeySpan.textContent = masked;
         currentKeyDiv.style.display = 'block';
         apiKeyInput.value = '';
-        
+
         // Update LLM status
         llmStatusDiv.style.background = '#dcfce7';
         llmStatusDiv.style.color = '#16a34a';
         llmStatusDiv.innerHTML = '✅ LLM Tie-Breaker Available - API key configured';
       }
-      
+
       showStatus('API credentials saved successfully!', 'success');
     } catch (e) {
       console.error('Error saving API credentials:', e);
@@ -171,22 +151,48 @@ document.addEventListener('DOMContentLoaded', async () => {
       .split('\n')
       .map(s => s.trim())
       .filter(s => s.length > 0);
-    
+
     const includeList = includeListTextarea.value
       .split('\n')
       .map(s => s.trim())
       .filter(s => s.length > 0);
-    
+
     await chrome.storage.sync.set({ excludeList, includeList });
     showStatus('Lists saved successfully!', 'success');
   });
 
-  // Clear cache
+  // Clear cache - FIXED to handle both old and new cache key formats
   clearCacheBtn.addEventListener('click', async () => {
     try {
-      await chrome.storage.local.remove(['cache_page', 'cache_segment', 'cache_image']);
+      // Clear ALL cache keys (both old and new formats)
+      await chrome.storage.local.remove([
+        // New format (used by cacheManager.js)
+        'cache_page', 
+        'cache_segment', 
+        'cache_image',
+        // Old format (legacy)
+        'pageCache', 
+        'segmentCache', 
+        'imageCache',
+        // Analysis results
+        'fakeNewsAnalysisResults',
+        'videoAnalysisResults',
+        'backendStatus'
+      ]);
+      
       showStatus('Cache cleared successfully!', 'success');
       updateCacheStats();
+      
+      // Update button temporarily
+      clearCacheBtn.textContent = '✓ Cache Cleared!';
+      clearCacheBtn.style.background = '#dcfce7';
+      clearCacheBtn.style.color = '#166534';
+      
+      setTimeout(() => {
+        clearCacheBtn.textContent = 'Clear All Caches';
+        clearCacheBtn.style.background = '';
+        clearCacheBtn.style.color = '';
+      }, 2000);
     } catch (e) {
       console.error('Error clearing cache:', e);
       showStatus('Failed to clear cache', 'error');
@@ -195,25 +201,49 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   async function updateCacheStats() {
     try {
-      const data = await chrome.storage.local.get(['cache_page', 'cache_segment', 'cache_image']);
-      const pageCount = Object.keys(data.cache_page || {}).length;
-      const segmentCount = Object.keys(data.cache_segment || {}).length;
-      const imageCount = Object.keys(data.cache_image || {}).length;
+      // Get both old and new format caches
+      const data = await chrome.storage.local.get([
+        'cache_page', 'cache_segment', 'cache_image',
+        'pageCache', 'segmentCache', 'imageCache',
+        'fakeNewsAnalysisResults', 'videoAnalysisResults'
+      ]);
       
+      // Count entries from both formats
+      const pageCount = Object.keys(data.cache_page || {}).length + Object.keys(data.pageCache || {}).length;
+      const segmentCount = Object.keys(data.cache_segment || {}).length + Object.keys(data.segmentCache || {}).length;
+      const imageCount = Object.keys(data.cache_image || {}).length + Object.keys(data.imageCache || {}).length;
+      const fakeNewsCount = (data.fakeNewsAnalysisResults || []).length;
+      const videoCount = (data.videoAnalysisResults || []).length;
+
       cacheStatsDiv.innerHTML = `
-        <div style="font-size: 12px; color: #6b7280; margin-top: 8px;">
-          Pages: ${pageCount} • Segments: ${segmentCount} • Images: ${imageCount}
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 12px;">
+          <div style="background: #f9fafb; padding: 12px; border-radius: 8px; text-align: center;">
+            <div style="font-size: 24px; font-weight: 700; color: #4f46e5;">${pageCount}</div>
+            <div style="font-size: 11px; color: #6b7280; text-transform: uppercase;">Pages</div>
+          </div>
+          <div style="background: #f9fafb; padding: 12px; border-radius: 8px; text-align: center;">
+            <div style="font-size: 24px; font-weight: 700; color: #4f46e5;">${segmentCount}</div>
+            <div style="font-size: 11px; color: #6b7280; text-transform: uppercase;">Segments</div>
+          </div>
+          <div style="background: #f9fafb; padding: 12px; border-radius: 8px; text-align: center;">
+            <div style="font-size: 24px; font-weight: 700; color: #4f46e5;">${imageCount}</div>
+            <div style="font-size: 11px; color: #6b7280; text-transform: uppercase;">Images</div>
+          </div>
+        </div>
+        <div style="font-size: 12px; color: #6b7280;">
+          Also cached: ${fakeNewsCount} news analyses, ${videoCount} video analyses
         </div>
       `;
     } catch (e) {
       console.error('Error loading cache stats:', e);
+      cacheStatsDiv.innerHTML = '<div style="color: #dc2626;">Error loading cache stats</div>';
     }
   }
 
   function showStatus(message, type) {
     statusMsg.textContent = message;
     statusMsg.className = 'status ' + type;
-    
+
     setTimeout(() => {
       statusMsg.className = 'status';
     }, 3000);
